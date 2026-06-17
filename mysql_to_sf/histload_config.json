@@ -1,0 +1,124 @@
+{
+  "export_dir": "./export",
+  "tables": [
+    {
+      "source_db": "employees",
+      "source_table": "departments",
+      "target_table": "DEPARTMENTS",
+      "primary_key": "DEPT_NO",
+      "load_type": "full",
+      "watermark_col": null,
+      "last_loaded_at": null,
+      "last_loaded_key": null,
+      "partition_col": "DEPT_NO",
+      "partition_num": 8,
+      "reconcile": false,
+      "active": false,
+      "last_run_status": null,
+      "rows_per_file": 1000000,
+      "_review": "no watermark column detected \u2014 incremental updates won't be captured"
+    },
+    {
+      "source_db": "employees",
+      "source_table": "dept_emp",
+      "target_table": "DEPT_EMP",
+      "primary_key": "EMP_NO",
+      "load_type": "full",
+      "watermark_col": null,
+      "last_loaded_at": null,
+      "last_loaded_key": null,
+      "partition_col": null,
+      "partition_num": 8,
+      "reconcile": false,
+      "active": false,
+      "last_run_status": null,
+      "rows_per_file": 1000000,
+      "merge_keys": [
+        "EMP_NO",
+        "DEPT_NO"
+      ],
+      "_review": "composite key (EMP_NO, DEPT_NO) \u2014 verify merge_keys are correct; no watermark column detected \u2014 incremental updates won't be captured"
+    },
+    {
+      "source_db": "employees",
+      "source_table": "dept_manager",
+      "target_table": "DEPT_MANAGER",
+      "primary_key": "EMP_NO",
+      "load_type": "full",
+      "watermark_col": null,
+      "last_loaded_at": null,
+      "last_loaded_key": null,
+      "partition_col": null,
+      "partition_num": 8,
+      "reconcile": false,
+      "active": false,
+      "last_run_status": null,
+      "rows_per_file": 1000000,
+      "merge_keys": [
+        "EMP_NO",
+        "DEPT_NO"
+      ],
+      "_review": "composite key (EMP_NO, DEPT_NO) \u2014 verify merge_keys are correct; no watermark column detected \u2014 incremental updates won't be captured"
+    },
+    {
+      "source_db": "employees",
+      "source_table": "employees",
+      "target_table": "EMPLOYEES",
+      "primary_key": "EMP_NO",
+      "load_type": "full",
+      "watermark_col": null,
+      "last_loaded_at": "2026-06-17 09:59:26",
+      "last_loaded_key": "499999",
+      "partition_col": "EMP_NO",
+      "partition_num": 8,
+      "reconcile": false,
+      "active": true,
+      "last_run_status": "success",
+      "rows_per_file": 1000000,
+      "_review_ack": "no watermark column detected \u2014 incremental updates won't be captured"
+    },
+    {
+      "source_db": "employees",
+      "source_table": "salaries",
+      "target_table": "SALARIES",
+      "primary_key": "EMP_NO",
+      "load_type": "incremental",
+      "watermark_col": "UPDATED_AT",
+      "last_loaded_at": "2026-06-15 15:20:16.000",
+      "last_loaded_key": null,
+      "partition_col": null,
+      "partition_num": 8,
+      "reconcile": false,
+      "active": true,
+      "last_run_status": "skipped",
+      "rows_per_file": 1000000,
+      "merge_keys": [
+        "EMP_NO",
+        "FROM_DATE"
+      ],
+      "_review_ack": "composite key (EMP_NO, FROM_DATE) \u2014 verify merge_keys are correct"
+    },
+    {
+      "source_db": "employees",
+      "source_table": "titles",
+      "target_table": "TITLES",
+      "primary_key": "EMP_NO",
+      "load_type": "full",
+      "watermark_col": null,
+      "last_loaded_at": null,
+      "last_loaded_key": null,
+      "partition_col": null,
+      "partition_num": 8,
+      "reconcile": false,
+      "active": false,
+      "last_run_status": null,
+      "rows_per_file": 1000000,
+      "merge_keys": [
+        "EMP_NO",
+        "TITLE",
+        "FROM_DATE"
+      ],
+      "_review": "composite key (EMP_NO, TITLE, FROM_DATE) \u2014 verify merge_keys are correct; no watermark column detected \u2014 incremental updates won't be captured"
+    }
+  ]
+}

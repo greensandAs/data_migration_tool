@@ -1,0 +1,17 @@
+Current time_export: 2025-08-26 09:47:58.890073
+Current time_export: 2025-08-26 09:48:58.873204
+Current time_export: 2025-08-26 09:49:01.626681
+Current time_upload: 2025-08-26 09:48:57.130730
+Current time_upload: 2025-08-26 09:49:05.238540
+Current time_upload: 2025-08-26 09:49:03.610224
+Current time_snowflake: 2025-08-26 09:49:06.218193
+Current time_snowflake: 2025-08-26 09:49:09.870136
+Current time_snowflake: 2025-08-26 09:49:10.614481
+Job Start: 2026-05-26 15:01:39.380568
+DEPARTMENTS Export Ends and Upload Start: 2026-05-26 15:02:02.186663
+ITEMS Export Ends and Upload Start: 2026-05-26 15:02:03.320528
+DIM_CUSTOMER_SCD0 Export Ends and Upload Start: 2026-05-26 15:02:04.191531
+DEPARTMENTS Upload Ends and Ingestion Start: 2026-05-26 15:02:06.026709
+ITEMS Upload Ends and Ingestion Start: 2026-05-26 15:02:06.804208
+DIM_CUSTOMER_SCD0 Upload Ends and Ingestion Start: 2026-05-26 15:02:12.120314
+Job End: 2026-05-26 15:02:46.429723

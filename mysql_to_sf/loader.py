@@ -14,6 +14,7 @@ INCREMENTAL (connectorx / Parquet):
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import snowflake.connector
@@ -51,6 +52,11 @@ def _stage_path(tbl: dict, subdir: str) -> str:
     return f"{STAGE}/{target_db(tbl['source_db'])}/{tbl['target_table']}/{subdir}"
 
 
+def stage_path(tbl: dict, subdir: str) -> str:
+    """Public accessor for a table's stage subdir path."""
+    return _stage_path(tbl, subdir)
+
+
 def clear_stage_safe(cur, tbl: dict, subdir: str) -> None:
     try:
         cur.execute(f"REMOVE {_stage_path(tbl, subdir)}/")
@@ -65,6 +71,67 @@ def put_file(cur, local_file, tbl: dict, subdir: str):
         f"PUT 'file://{local}' {stage_path}/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE")
     for row in cur.fetchall():
         print(f"   PUT {row[0]} -> {row[6] if len(row) > 6 else row[-1]}")
+
+
+DEFAULT_PUT_PARALLEL = 4
+
+
+def put_files_parallel(sf_cfg: dict, files: list, tbl: dict, subdir: str,
+                       max_workers: int = None):
+    """PUT multiple files to stage in parallel using separate connections.
+
+    Each thread opens its own Snowflake connection+cursor (connections are not
+    thread-safe). Returns the count of files successfully uploaded.
+    """
+    if not files:
+        return 0
+    workers = max_workers or int(tbl.get("put_parallel", DEFAULT_PUT_PARALLEL))
+    workers = min(workers, len(files))
+
+    if workers <= 1:
+        conn = get_sf_conn(sf_cfg)
+        cur = conn.cursor()
+        try:
+            for fp in files:
+                put_file(cur, fp, tbl, subdir)
+        finally:
+            cur.close()
+            conn.close()
+        return len(files)
+
+    stage = _stage_path(tbl, subdir)
+    uploaded = 0
+    errors = []
+
+    def _upload_one(local_file):
+        conn = get_sf_conn(sf_cfg)
+        cur = conn.cursor()
+        try:
+            local = Path(local_file).resolve().as_posix()
+            cur.execute(
+                f"PUT 'file://{local}' {stage}/ AUTO_COMPRESS=FALSE OVERWRITE=TRUE")
+            for row in cur.fetchall():
+                print(f"   PUT {row[0]} -> {row[6] if len(row) > 6 else row[-1]}")
+        finally:
+            cur.close()
+            conn.close()
+
+    print(f"   parallel PUT: {len(files)} file(s) with {workers} threads")
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(_upload_one, fp): fp for fp in files}
+        for fut in as_completed(futures):
+            try:
+                fut.result()
+                uploaded += 1
+            except Exception as e:  # noqa: BLE001
+                errors.append((futures[fut], e))
+                print(f"   PUT FAILED {futures[fut]}: {e}")
+
+    if errors:
+        raise RuntimeError(
+            f"Parallel PUT: {len(errors)}/{len(files)} file(s) failed. "
+            f"First error: {errors[0][1]}")
+    return uploaded
 
 
 def copy_into_full(cur, tbl: dict, columns, batch_id: str = None):
@@ -195,14 +262,15 @@ def _copy_rows_loaded(cur) -> int:
         return _rows_loaded(cur)
 
 
-def current_max_watermark(cur, tbl: dict):
+def current_max_watermark(cur, tbl: dict, wm_col: str = None):
     """Read MAX(watermark) from the target — Snowflake is the source of truth.
 
+    wm_col overrides tbl["watermark_col"] (e.g. the primary key for id mode).
     Returned as VARCHAR (via TO_VARCHAR) so the connector never converts a large
     TIMESTAMP/NUMBER to a C int, and because it is reused as a string literal in
     the next MySQL query.
     """
-    wm = tbl.get("watermark_col")
+    wm = wm_col or tbl.get("watermark_col")
     if not wm:
         return None
     cur.execute(f'SELECT TO_VARCHAR(MAX("{wm}")) FROM {raw_table(tbl)}')

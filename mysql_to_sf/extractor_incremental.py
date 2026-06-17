@@ -15,7 +15,7 @@ import mysql.connector
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-LAG_MINUTES = 5  # exclude in-flight rows near "now"
+LAG_MINUTES = 1  # exclude in-flight rows near "now"
 DEFAULT_ROWS_PER_FILE = 1_000_000
 
 # MySQL DECIMAL allows precision up to 65, but Snowflake NUMBER maxes at 38 and
@@ -32,14 +32,10 @@ def _mysql_uri(src_cfg: dict, db: str) -> str:
             f'@{src_cfg["host"]}:{src_cfg["port"]}/{db}')
 
 
-def _is_int_column(src_cfg: dict, db: str, table: str, col: str) -> bool:
+def _is_int_column(mysql_conn, db: str, table: str, col: str) -> bool:
     """True only if `col` is an integer type (safe for connectorx partition_on)."""
     try:
-        conn = mysql.connector.connect(
-            host=src_cfg["host"], port=int(src_cfg["port"]),
-            user=src_cfg["user"], password=src_cfg["password"],
-        )
-        cur = conn.cursor()
+        cur = mysql_conn.cursor()
         cur.execute(
             "SELECT DATA_TYPE FROM information_schema.columns "
             "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND UPPER(COLUMN_NAME)=UPPER(%s)",
@@ -47,13 +43,12 @@ def _is_int_column(src_cfg: dict, db: str, table: str, col: str) -> bool:
         )
         row = cur.fetchone()
         cur.close()
-        conn.close()
     except Exception:  # noqa: BLE001 — on doubt, don't partition
         return False
     return bool(row) and str(row[0]).lower() in _INT_TYPES
 
 
-def _select_list(src_cfg: dict, db: str, table: str) -> str:
+def _select_list(mysql_conn, db: str, table: str) -> str:
     """Explicit column projection for the incremental read.
 
       * decimal/numeric wider than Snowflake's 38 precision -> CAST AS CHAR.
@@ -64,11 +59,7 @@ def _select_list(src_cfg: dict, db: str, table: str) -> str:
     Returns "*" if column metadata can't be read.
     """
     try:
-        conn = mysql.connector.connect(
-            host=src_cfg["host"], port=int(src_cfg["port"]),
-            user=src_cfg["user"], password=src_cfg["password"],
-        )
-        cur = conn.cursor()
+        cur = mysql_conn.cursor()
         cur.execute(
             "SELECT COLUMN_NAME, DATA_TYPE, NUMERIC_PRECISION "
             "FROM information_schema.columns "
@@ -77,7 +68,6 @@ def _select_list(src_cfg: dict, db: str, table: str) -> str:
         )
         rows = cur.fetchall()
         cur.close()
-        conn.close()
     except Exception as e:  # noqa: BLE001
         print(f"   (column probe failed, using SELECT *: {e})")
         return "*"
@@ -98,58 +88,67 @@ def _select_list(src_cfg: dict, db: str, table: str) -> str:
     return ", ".join(parts)
 
 
-def _source_ceiling(src_cfg: dict) -> str:
+def _source_ceiling(mysql_conn) -> str:
     """Window upper bound (wm_to) in the SOURCE database's clock (NOW() - lag)."""
     try:
-        conn = mysql.connector.connect(
-            host=src_cfg["host"], port=int(src_cfg["port"]),
-            user=src_cfg["user"], password=src_cfg["password"],
-        )
-        cur = conn.cursor()
+        cur = mysql_conn.cursor()
         cur.execute("SELECT NOW()")
         now = cur.fetchone()[0]
         cur.close()
-        conn.close()
     except Exception as e:  # noqa: BLE001
         print(f"   (source clock probe failed, using host clock: {e})")
         now = datetime.now()
     return (now - timedelta(minutes=LAG_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _numeric_ceiling(src_cfg: dict, db: str, table: str, col: str):
+def _numeric_ceiling(mysql_conn, db: str, table: str, col: str):
     """Current MAX(col) in the source as a numeric string (None if empty)."""
     try:
-        conn = mysql.connector.connect(
-            host=src_cfg["host"], port=int(src_cfg["port"]),
-            user=src_cfg["user"], password=src_cfg["password"],
-        )
-        cur = conn.cursor()
+        cur = mysql_conn.cursor()
         cur.execute(f"SELECT MAX(`{col}`) FROM `{db}`.`{table}`")
         v = cur.fetchone()[0]
         cur.close()
-        conn.close()
     except Exception as e:  # noqa: BLE001
         print(f"   (max-id probe failed: {e})")
         return None
     return str(v) if v is not None else None
 
 
-def _watermark_type(tbl: dict, src_cfg: dict) -> str:
-    """'id' for an integer-key watermark (insert-only capture), else 'time'.
+def resolve_cursor(tbl: dict, mysql_conn):
+    """Return (cursor_col, wm_type) for an incremental load.
 
-    Explicit tbl['watermark_type'] wins; otherwise auto-detect from the column
-    type (integer -> id).
+    cursor_col : the column tracked as the watermark — `watermark_col` if set,
+                 else the single `primary_key` (id-style fallback).
+    wm_type    : explicit tbl['watermark_type'] ('id'|'time') wins; otherwise
+                 auto — 'id' when the cursor column is an integer, else 'time'.
+
+    This lets a table be configured for id mode with just primary_key +
+    watermark_type='id' (no separate watermark_col needed).
     """
-    wm_type = tbl.get("watermark_type")
-    if wm_type in ("id", "time"):
-        return wm_type
+    explicit = tbl.get("watermark_type")
     wm_col = tbl.get("watermark_col")
-    if wm_col and _is_int_column(src_cfg, tbl["source_db"], tbl["source_table"], wm_col):
-        return "id"
-    return "time"
+    pk = tbl.get("primary_key")
+    if explicit == "id":
+        col = wm_col or pk
+        return (col.upper() if col else None), "id"
+    if explicit == "time":
+        return (wm_col.upper() if wm_col else None), "time"
+    # Auto-detect from the column type.
+    if wm_col:
+        wt = ("id" if _is_int_column(mysql_conn, tbl["source_db"],
+                                     tbl["source_table"], wm_col) else "time")
+        return wm_col.upper(), wt
+    if pk and _is_int_column(mysql_conn, tbl["source_db"], tbl["source_table"], pk):
+        return pk.upper(), "id"
+    return None, "time"
 
 
-def extract_incremental_connectorx(tbl: dict, src_cfg: dict, export_dir: str):
+def watermark_type(tbl: dict, mysql_conn) -> str:
+    """Backward-compatible: just the wm_type from resolve_cursor()."""
+    return resolve_cursor(tbl, mysql_conn)[1]
+
+
+def extract_incremental_connectorx(tbl: dict, src_cfg: dict, export_dir: str, mysql_conn):
     """Extract the incremental delta for one table.
 
     Returns (parquet_files, row_count, watermark_to).
@@ -164,15 +163,17 @@ def extract_incremental_connectorx(tbl: dict, src_cfg: dict, export_dir: str):
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    wm_col = tbl["watermark_col"]
-    wm_type = _watermark_type(tbl, src_cfg)
+    wm_col, wm_type = resolve_cursor(tbl, mysql_conn)
+    if not wm_col:
+        raise ValueError(
+            f"{tbl['source_table']}: incremental needs watermark_col or primary_key")
     # id mode reads/writes the numeric cursor in last_loaded_key; time mode uses
     # last_loaded_at (a timestamp cursor).
     wm_from = (tbl.get("last_loaded_key") if wm_type == "id"
                else tbl.get("last_loaded_at"))
 
     if wm_type == "id":
-        wm_to = _numeric_ceiling(src_cfg, tbl["source_db"], tbl["source_table"], wm_col)
+        wm_to = _numeric_ceiling(mysql_conn, tbl["source_db"], tbl["source_table"], wm_col)
         print("   watermark mode: id (integer key — INSERTS only, no updates)")
         if wm_to is None:
             print("   source table empty — skipping.")
@@ -183,7 +184,7 @@ def extract_incremental_connectorx(tbl: dict, src_cfg: dict, export_dir: str):
         else:
             where = f"`{wm_col}` <= {wm_to}"
     else:
-        wm_to = _source_ceiling(src_cfg)
+        wm_to = _source_ceiling(mysql_conn)
         if wm_from:
             where = (f"`{wm_col}` > '{wm_from}' AND `{wm_col}` <= '{wm_to}'")
         else:
@@ -191,7 +192,7 @@ def extract_incremental_connectorx(tbl: dict, src_cfg: dict, export_dir: str):
             if wm_col:
                 where = f"`{wm_col}` <= '{wm_to}'"
 
-    select_list = _select_list(src_cfg, tbl["source_db"], tbl["source_table"])
+    select_list = _select_list(mysql_conn, tbl["source_db"], tbl["source_table"])
     query = (f"SELECT {select_list} FROM `{tbl['source_db']}`.`{tbl['source_table']}` "
              f"WHERE {where}")
     print(f"   query: {query}")
@@ -202,7 +203,7 @@ def extract_incremental_connectorx(tbl: dict, src_cfg: dict, export_dir: str):
     # Partitioned parallel read only when partition_col is an INTEGER column.
     pcol = tbl.get("partition_col")
     if pcol and int(tbl.get("partition_num", 1)) > 1:
-        if _is_int_column(src_cfg, tbl["source_db"], tbl["source_table"], pcol):
+        if _is_int_column(mysql_conn, tbl["source_db"], tbl["source_table"], pcol):
             read_kwargs["partition_on"] = pcol
             read_kwargs["partition_num"] = int(tbl["partition_num"])
         else:

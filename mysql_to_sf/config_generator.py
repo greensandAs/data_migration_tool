@@ -54,7 +54,7 @@ def _watermark_col(cur, schema, table):
     cols = {r[0].lower(): str(r[1]).lower() for r in cur.fetchall()}
     for cand in _WM_CANDIDATES:
         if cand in cols and cols[cand] in ("datetime", "timestamp", "date"):
-            return cols[cand]  # original-case lookup below
+            return cand  # the COLUMN NAME (not its data type)
     return None
 
 
@@ -70,18 +70,28 @@ def build_table_entry(cur, schema, table):
         "load_type": "incremental" if wm else "full",
         "watermark_col": wm.upper() if wm else None,
         "last_loaded_at": None,
+        "last_loaded_key": None,
         "partition_col": pk if (pk_cols and len(pk_cols) == 1) else None,
         "partition_num": 8 if pk_cols else 1,
         "reconcile": False,
-        "active": True,
+        "active": False,
         "last_run_status": None,
         "rows_per_file": 1000000,
     }
     if len(pk_cols) > 1:
         entry["merge_keys"] = [c.upper() for c in pk_cols]
+
+    reviews = []
     if not pk_cols:
-        entry["_review"] = "no primary key — full load only (no incremental MERGE)"
+        reviews.append("no primary key — full load only (no incremental MERGE)")
         entry["load_type"] = "full"
+    if len(pk_cols) > 1:
+        reviews.append(f"composite key ({', '.join(c.upper() for c in pk_cols)}) — verify merge_keys are correct")
+    if not wm:
+        reviews.append("no watermark column detected — incremental updates won't be captured")
+    if reviews:
+        entry["_review"] = "; ".join(reviews)
+
     return entry
 
 

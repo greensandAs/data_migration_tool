@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import mysql.connector
@@ -42,10 +45,68 @@ import validator
 import watermark
 
 CONFIG_DEFAULT = "histload_config.json"
+DEFAULT_MAX_PARALLEL = 4  # tables processed concurrently (override: max_parallel_tables)
 
 
 def _now_local():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# ── Per-table log prefixing for parallel runs ────────────────────────────────
+# Each worker thread sets _LOG_LOCAL.tag; the stdout wrapper prepends it to every
+# line so interleaved output stays attributable (e.g. "[mtest.orders] COPY ...").
+_LOG_LOCAL = threading.local()
+
+
+class _PrefixStream:
+    """stdout wrapper that prepends the calling thread's tag to each line.
+
+    Buffers partial writes per thread until a newline so the multi-write pattern
+    of print() (text, then '\\n') is tagged once per complete line. Untagged
+    threads (e.g. top-level banners) pass through unchanged.
+    """
+    def __init__(self, base):
+        self._base = base
+
+    def write(self, text):
+        tag = getattr(_LOG_LOCAL, "tag", None)
+        if not tag:
+            return self._base.write(text)
+        buf = getattr(_LOG_LOCAL, "buf", "") + text
+        parts = buf.split("\n")
+        for line in parts[:-1]:
+            self._base.write(f"{tag} {line}\n")
+        _LOG_LOCAL.buf = parts[-1]
+        return len(text)
+
+    def flush(self):
+        tag = getattr(_LOG_LOCAL, "tag", None)
+        buf = getattr(_LOG_LOCAL, "buf", "")
+        if tag and buf:
+            self._base.write(f"{tag} {buf}")
+            _LOG_LOCAL.buf = ""
+        self._base.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+
+class _NullLock:
+    """No-op context manager (used when no cfg_lock is supplied)."""
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _cleanup_export(export_dir, tbl):
+    """Remove this table's local extract files after a load (stage is PURGEd)."""
+    try:
+        shutil.rmtree(os.path.join(export_dir, tbl["source_table"]),
+                      ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _build_src_cfg(src: dict) -> dict:
@@ -82,55 +143,98 @@ def _connect(cfg):
         user=src_cfg["user"], password=src_cfg["password"],
     )
     sf_conn = loader.get_sf_conn(sf_cfg)
-    return src_cfg, sf_conn, mysql_conn
+    return src_cfg, sf_cfg, sf_conn, mysql_conn
+
+
+def _mysql_connect(src_cfg):
+    return mysql.connector.connect(
+        host=src_cfg["host"], port=int(src_cfg["port"]),
+        user=src_cfg["user"], password=src_cfg["password"])
 
 
 def run(config_path: str = CONFIG_DEFAULT, force_full: bool = False,
         only_table: str | None = None):
     with open(config_path) as f:
         cfg = json.load(f)
+    src_cfg = _build_src_cfg(cfg.get("source", {}))
+    sf_cfg = _build_sf_cfg(cfg.get("snowflake", {}))
     export_dir = cfg.get("export_dir", "./export")
     batch_id = uuid.uuid4().hex[:12]
+    max_workers = max(1, int(cfg.get("max_parallel_tables", DEFAULT_MAX_PARALLEL)))
+
+    todo = [t for t in cfg["tables"] if t.get("active", True)
+            and (not only_table or t["source_table"] == only_table)]
 
     print("=" * 64)
     print(f" MySQL -> Snowflake historical load | batch {batch_id} | {_now_local()} local")
+    print(f" tables: {len(todo)} | parallelism: {min(max_workers, len(todo) or 1)}")
     print("=" * 64)
 
-    src_cfg, sf_conn, mysql_conn = _connect(cfg)
+    # Serialize config (histload_config.json) writes across worker threads so
+    # concurrent watermark updates don't clobber each other.
+    cfg_lock = threading.Lock()
+
+    def _worker(tbl):
+        # Each worker uses its OWN connections (DB connections aren't thread-safe).
+        sf_conn = loader.get_sf_conn(sf_cfg)
+        mysql_conn = _mysql_connect(src_cfg)
+        try:
+            return _process_table(tbl, src_cfg, sf_cfg, sf_conn, mysql_conn,
+                                  export_dir, batch_id, config_path,
+                                  force_full=force_full, cfg_lock=cfg_lock)
+        finally:
+            try:
+                mysql_conn.close()
+            finally:
+                sf_conn.close()
+
     failed = 0
+    # Tag every worker line with its table for the whole run (parallel AND the
+    # sequential _process_table on the main thread); main-thread banners have no
+    # tag and pass through. Restore the real stdout when done.
+    _orig_stdout = sys.stdout
+    sys.stdout = _PrefixStream(_orig_stdout)
     try:
-        for tbl in cfg["tables"]:
-            if not tbl.get("active", True):
-                continue
-            if only_table and tbl["source_table"] != only_table:
-                continue
-            status = _process_table(tbl, src_cfg, sf_conn, mysql_conn,
-                                    export_dir, batch_id, config_path,
-                                    force_full=force_full)
-            if status == "failed":
-                failed += 1
+        if not todo:
+            print("No active tables to process.")
+        elif max_workers == 1 or len(todo) == 1:
+            for tbl in todo:
+                if _worker(tbl) == "failed":
+                    failed += 1
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = {ex.submit(_worker, tbl): tbl for tbl in todo}
+                for fut in as_completed(futures):
+                    try:
+                        if fut.result() == "failed":
+                            failed += 1
+                    except Exception as e:  # noqa: BLE001 — defensive; worker logs detail
+                        failed += 1
+                        print(f"   worker error for {futures[fut]['source_table']}: {e}")
     finally:
-        mysql_conn.close()
-        sf_conn.close()
+        sys.stdout = _orig_stdout
 
     print(f"\nRun complete: {_now_local()} local (batch {batch_id}) | "
           f"failed tables: {failed}")
     return failed
 
 
-def _process_table(tbl, src_cfg, sf_conn, mysql_conn, export_dir, batch_id,
-                   config_path, force_full: bool = False):
+def _process_table(tbl, src_cfg, sf_cfg, sf_conn, mysql_conn, export_dir, batch_id,
+                   config_path, force_full: bool = False, cfg_lock=None):
+    lock = cfg_lock or _NullLock()
+    # Tag this thread's log lines (no-op unless stdout is wrapped, i.e. parallel).
+    _LOG_LOCAL.tag = f"[{tbl['source_db']}.{tbl['source_table']}]"
     first_run = tbl.get("last_loaded_at") is None
     is_full = force_full or first_run or tbl.get("load_type") == "full"
     engine = "mysqlsh" if is_full else "connectorx"
     label = "FULL" if is_full else "INCREMENTAL"
-    print(f"\n[{label}/{engine}] {tbl['source_db']}.{tbl['source_table']} "
+    print(f"[{label}/{engine}] {tbl['source_db']}.{tbl['source_table']} "
           f"-> {loader.target_db(tbl['source_db'])}.RAW.{tbl['target_table']}")
 
-    # Watermark mode + the cursor field it reads/writes (id -> last_loaded_key,
-    # time -> last_loaded_at). Used for RUN_LOG WATERMARK_FROM and persistence.
-    wm_type = (extractor_incremental._watermark_type(tbl, src_cfg)
-               if tbl.get("watermark_col") else "time")
+    # Resolve the incremental cursor column + type. id mode falls back to the
+    # primary_key when watermark_col is blank. Used for RUN_LOG WATERMARK_FROM/TYPE
+    # and watermark persistence.
+    wm_col_eff, wm_type = extractor_incremental.resolve_cursor(tbl, mysql_conn)
     wm_from_cursor = (tbl.get("last_loaded_key") if wm_type == "id"
                       else tbl.get("last_loaded_at"))
 
@@ -142,7 +246,7 @@ def _process_table(tbl, src_cfg, sf_conn, mysql_conn, export_dir, batch_id,
         "load_type": label.lower(), "engine": engine,
         "rows_extracted": 0, "rows_loaded": 0,
         "watermark_from": wm_from_cursor, "watermark_to": None,
-        "watermark_type": (wm_type if tbl.get("watermark_col") else None),
+        "watermark_type": (wm_type if wm_col_eff else None),
         "status": "failed", "error_message": None, "failed_step": None,
         "duration_sec": None, "run_start": _now_local(), "run_end": None,
     }
@@ -161,50 +265,55 @@ def _process_table(tbl, src_cfg, sf_conn, mysql_conn, export_dir, batch_id,
             step = "extract_full"
             files, _ = extractor_full.extract_full_mysqlsh(tbl, src_cfg, export_dir)
             step = "put"
-            for fp in files:
-                loader.put_file(cur, fp, tbl, "full")
+            loader.put_files_parallel(sf_cfg, files, tbl, "full")
             step = "copy_full"
             rec["rows_loaded"] = loader.copy_into_full(cur, tbl, columns, batch_id)
             rec["rows_extracted"] = rec["rows_loaded"]
             # Snapshot marker; overridden below by MAX(watermark_col) if present.
             rec["watermark_to"] = _now_local()
+            _cleanup_export(export_dir, tbl)
         else:
             step = "extract_incremental"
             files, rows, wm_to = extractor_incremental.extract_incremental_connectorx(
-                tbl, src_cfg, export_dir)
+                tbl, src_cfg, export_dir, mysql_conn)
             rec["rows_extracted"] = rows
-            rec["watermark_to"] = wm_to
             if files and rows > 0:
                 step = "put"
                 loader.clear_stage_safe(cur, tbl, "incremental")
-                for fp in files:
-                    loader.put_file(cur, fp, tbl, "incremental")
+                loader.put_files_parallel(sf_cfg, files, tbl, "incremental")
                 step = "copy_merge"
                 rec["rows_loaded"] = loader.copy_into_merge(cur, tbl, batch_id)
             else:
                 rec["status"] = "skipped"
+            _cleanup_export(export_dir, tbl)
+
+        # Authoritative watermark_to = MAX(cursor column) in the TARGET (not the
+        # window ceiling or load time). Applies to success and skipped runs alike;
+        # for a no-watermark full load it stays the snapshot marker set above.
+        step = "watermark"
+        wm = loader.current_max_watermark(cur, tbl, wm_col_eff) if wm_col_eff else None
+        if wm:
+            rec["watermark_to"] = wm
 
         if rec["status"] != "skipped":
-            step = "watermark"
-            wm = loader.current_max_watermark(cur, tbl)
-            if wm:
-                rec["watermark_to"] = wm
             # Persist the cursor in the right field: id mode -> last_loaded_key
             # (numeric PK), with last_loaded_at as a tracking timestamp; time mode
             # -> last_loaded_at (the timestamp cursor).
-            if wm_type == "id":
-                watermark.update_table_state(
-                    config_path, tbl["source_db"], tbl["source_table"],
-                    status="success", last_loaded_key=wm, last_loaded_at=_now_local())
-            else:
-                watermark.update_table_state(
-                    config_path, tbl["source_db"], tbl["source_table"],
-                    status="success", last_loaded_at=wm)
+            with lock:
+                if wm_type == "id":
+                    watermark.update_table_state(
+                        config_path, tbl["source_db"], tbl["source_table"],
+                        status="success", last_loaded_key=wm, last_loaded_at=_now_local())
+                else:
+                    watermark.update_table_state(
+                        config_path, tbl["source_db"], tbl["source_table"],
+                        status="success", last_loaded_at=wm)
             rec["status"] = "success"
         else:
             print("   skipped — no new rows")
-            watermark.update_table_state(
-                config_path, tbl["source_db"], tbl["source_table"], status="skipped")
+            with lock:
+                watermark.update_table_state(
+                    config_path, tbl["source_db"], tbl["source_table"], status="skipped")
 
         sf_conn.commit()
         print(f"   done ({rec['status']})")
@@ -214,8 +323,9 @@ def _process_table(tbl, src_cfg, sf_conn, mysql_conn, export_dir, batch_id,
         rec["status"] = "failed"
         rec["failed_step"] = step
         rec["error_message"] = str(e)[:4000]
-        watermark.update_table_state(
-            config_path, tbl["source_db"], tbl["source_table"], status="failed")
+        with lock:
+            watermark.update_table_state(
+                config_path, tbl["source_db"], tbl["source_table"], status="failed")
         print(f"   FAILED at step '{step}': {e}")
     finally:
         rec["run_end"] = _now_local()
@@ -226,6 +336,12 @@ def _process_table(tbl, src_cfg, sf_conn, mysql_conn, export_dir, batch_id,
         except Exception as le:  # noqa: BLE001
             print(f"   (run_log write failed: {le})")
         cur.close()
+        # Flush any partial tagged line and clear this thread's tag.
+        try:
+            sys.stdout.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        _LOG_LOCAL.tag = None
 
     return rec["status"]
 
@@ -233,13 +349,14 @@ def _process_table(tbl, src_cfg, sf_conn, mysql_conn, export_dir, batch_id,
 def run_reconcile(config_path: str = CONFIG_DEFAULT, only_table: str | None = None):
     with open(config_path) as f:
         cfg = json.load(f)
+    export_dir = cfg.get("export_dir", "./export")
     batch_id = uuid.uuid4().hex[:12]
 
     print("=" * 64)
     print(f" Delete reconciliation | batch {batch_id} | {_now_local()} local")
     print("=" * 64)
 
-    _, sf_conn, mysql_conn = _connect(cfg)
+    src_cfg, sf_cfg, sf_conn, mysql_conn = _connect(cfg)
     failed = 0
     try:
         for tbl in cfg["tables"]:
@@ -262,7 +379,8 @@ def run_reconcile(config_path: str = CONFIG_DEFAULT, only_table: str | None = No
             }
             print(f"\n[RECONCILE] {tbl['source_db']}.{tbl['source_table']}")
             try:
-                result = reconciler.reconcile_table(cur, mysql_conn, tbl)
+                result = reconciler.reconcile_table(cur, mysql_conn, tbl, src_cfg,
+                                                     export_dir, sf_cfg=sf_cfg)
                 if result["skipped"]:
                     print(f"   skipped — {result['skipped']}")
                     rec["status"] = "skipped"
@@ -307,7 +425,7 @@ def run_validate(config_path: str = CONFIG_DEFAULT, only_table: str | None = Non
           f"batch {batch_id} | {_now_local()} local")
     print("=" * 64)
 
-    _, sf_conn, mysql_conn = _connect(cfg)
+    src_cfg, sf_cfg, sf_conn, mysql_conn = _connect(cfg)
     mismatches = 0
     try:
         for tbl in cfg["tables"]:
@@ -344,8 +462,8 @@ def run_validate(config_path: str = CONFIG_DEFAULT, only_table: str | None = Non
                     "load_type": "validate", "engine": "validator",
                     "rows_extracted": r["source"], "rows_loaded": r["raw_live"],
                     "watermark_from": r["source_wm"], "watermark_to": r["raw_wm"],
-                    "watermark_type": (extractor_incremental._watermark_type(tbl, src_cfg)
-                                       if tbl.get("watermark_col") else None),
+                    "watermark_type": extractor_incremental.resolve_cursor(tbl, mysql_conn)[1]
+                    if (tbl.get("watermark_col") or tbl.get("primary_key")) else None,
                     "status": "success" if ok else "mismatch",
                     "error_message": None if ok else "; ".join(checks),
                     "failed_step": None if ok else "parity",

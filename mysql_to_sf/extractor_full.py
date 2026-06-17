@@ -32,12 +32,20 @@ def extract_full_mysqlsh(tbl: dict, src_cfg: dict, export_dir: str):
         f'{{threads: {threads}, compression: "zstd", showProgress: true, '
         f'tzUtc: false}})'
     )
-    uri = (f'mysql://{quote_plus(src_cfg["user"])}:{quote_plus(src_cfg["password"])}'
+    # Password is sent via stdin (--passwords-from-stdin), NOT in the URI, so it
+    # never appears in the process list (ps aux / /proc). The URI carries only
+    # user@host:port. Fallback if a mysqlsh build ignores --passwords-from-stdin:
+    # write a chmod-600 --defaults-extra-file with [client] password and delete it.
+    pwd = src_cfg.get("password") or ""
+    uri = (f'mysql://{quote_plus(src_cfg["user"])}'
            f'@{src_cfg["host"]}:{src_cfg["port"]}')
-    cmd = ["mysqlsh", f"--uri={uri}", "--js", "--execute", js_cmd]
+    cmd = ["mysqlsh", f"--uri={uri}", "--passwords-from-stdin",
+           "--js", "--execute", js_cmd]
 
     print(f"   mysqlsh full dump starting -> {out_dir}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd, input=(pwd + "\n") if pwd else None,
+        capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"mysqlsh failed:\n{result.stderr}")
 

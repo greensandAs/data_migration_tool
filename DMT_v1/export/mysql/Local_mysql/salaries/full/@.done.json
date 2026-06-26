@@ -1,0 +1,12 @@
+{
+    "end": "2026-06-22 21:48:29",
+    "dataBytes": 155888221,
+    "tableDataBytes": {
+        "employees": {
+            "salaries": 155888221
+        }
+    },
+    "chunkFileBytes": {
+        "employees@salaries@@0.tsv.zst": 155888221
+    }
+}

@@ -75,9 +75,10 @@ div[data-testid="stDecoration"] {{ display: none !important; }}
 
 /* Sidebar — static, non-collapsible, fixed width 240px */
 section[data-testid="stSidebar"] {{ background: {TA_NAVY} !important; border-right: 3px solid {TA_ORANGE}; min-width: 240px !important; max-width: 240px !important; width: 240px !important; }}
-section[data-testid="stSidebar"] > div {{ width: 240px !important; }}
-section[data-testid="stSidebar"] > div > div {{ padding-top: 0 !important; margin-top: 0 !important; }}
+section[data-testid="stSidebar"] > div {{ width: 240px !important; overflow: hidden !important; }}
+section[data-testid="stSidebar"] > div > div {{ padding-top: 0 !important; margin-top: 0 !important; overflow: hidden !important; }}
 section[data-testid="stSidebar"] > div > div > div:first-child {{ margin-top: 0 !important; padding-top: 0 !important; }}
+section[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {{ overflow: hidden !important; }}
 section[data-testid="stSidebar"] label,
 section[data-testid="stSidebar"] .stMarkdown,
 section[data-testid="stSidebar"] .stMarkdown * {{ color: {TXT_PRIMARY} !important; }}
@@ -380,15 +381,31 @@ def source_type_pill(source_type: str) -> str:
 
 
 def render_header():
-    st.markdown(
-        f'<div class="main-header">'
-        f'<div style="background:{TA_NAVY};border-left:6px solid {TA_ORANGE};'
-        f'border-radius:8px;padding:14px 22px;">'
-        f'<div style="font-size:1.4rem;font-weight:700;color:#FFFFFF;">'
-        f'DMT — Data Migration Toolkit</div>'
-        f'<div style="font-size:.78rem;color:{TXT_SECONDARY};margin-top:2px;">'
-        f'Tiger Analytics &middot; Multi-source &middot; Modular &middot; Resumable'
-        f'</div></div></div>', unsafe_allow_html=True)
+    # Header with AI Assist toggle on the right
+    h_left, h_right = st.columns([3, 1])
+    with h_left:
+        st.markdown(
+            f'<div class="main-header">'
+            f'<div style="background:{TA_NAVY};border-left:6px solid {TA_ORANGE};'
+            f'border-radius:8px;padding:14px 22px;">'
+            f'<div style="font-size:1.4rem;font-weight:700;color:#FFFFFF;">'
+            f'DMT — Data Migration Toolkit</div>'
+            f'<div style="font-size:.78rem;color:{TXT_SECONDARY};margin-top:2px;">'
+            f'Tiger Analytics &middot; Multi-source &middot; Modular &middot; Resumable'
+            f'</div></div></div>', unsafe_allow_html=True)
+    with h_right:
+        st.markdown("<div style='padding-top:18px'>", unsafe_allow_html=True)
+        st.session_state["_ai_on"] = st.toggle(
+            "🤖 AI Assist", value=st.session_state.get("_ai_on", False),
+            key="header_ai_toggle",
+            help="Enable Cortex-powered config recommendations and failure explanations.")
+        if st.session_state["_ai_on"]:
+            st.session_state["_ai_model"] = st.selectbox(
+                "Model", AI_MODELS,
+                index=AI_MODELS.index(st.session_state.get("_ai_model", AI_MODEL))
+                if st.session_state.get("_ai_model", AI_MODEL) in AI_MODELS else 0,
+                key="header_ai_model", label_visibility="collapsed")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_footer():
@@ -483,10 +500,10 @@ with st.sidebar:
 
     st.markdown(f"<hr style='border-color:{BORDER}'>", unsafe_allow_html=True)
 
-    # ── Source Connection Selector ────────────────────────────────────────────
+    # ── Source Type & Connection Selector ────────────────────────────────────────
     st.markdown(
         f'<div style="font-size:.65rem;letter-spacing:2px;text-transform:uppercase;'
-        f'color:{TXT_LABEL};font-weight:700;margin-bottom:4px">Source Connection</div>',
+        f'color:{TXT_LABEL};font-weight:700;margin-bottom:4px">Source Type</div>',
         unsafe_allow_html=True)
 
     # Fetch profiles (cached in session to avoid repeated queries)
@@ -500,9 +517,43 @@ with st.sidebar:
             st.session_state["_profiles_list"] = []
 
     _profiles = st.session_state.get("_profiles_list", [])
-    _profile_options = ["All Connections"] + [p["PROFILE_NAME"] for p in _profiles]
+
+    # Source type selector
+    _source_types = sorted(set(p.get("SOURCE_TYPE", "mysql").lower() for p in _profiles)) if _profiles else ["mysql"]
+    if "selected_source_type" not in st.session_state:
+        st.session_state["selected_source_type"] = "all"
+
+    _type_options = ["all"] + _source_types
+    sel_type = st.selectbox(
+        "source_type",
+        _type_options,
+        index=_type_options.index(st.session_state["selected_source_type"])
+        if st.session_state["selected_source_type"] in _type_options else 0,
+        format_func=lambda x: "All Types" if x == "all" else x.upper(),
+        label_visibility="collapsed",
+        key="sidebar_source_type_select",
+    )
+    st.session_state["selected_source_type"] = sel_type
+
+    # Filter profiles by selected source type
+    if sel_type == "all":
+        _filtered_profiles = _profiles
+    else:
+        _filtered_profiles = [p for p in _profiles if (p.get("SOURCE_TYPE") or "").lower() == sel_type]
+
+    # Source connection selector (filtered)
+    st.markdown(
+        f'<div style="font-size:.65rem;letter-spacing:2px;text-transform:uppercase;'
+        f'color:{TXT_LABEL};font-weight:700;margin-bottom:4px;margin-top:10px">Source Connection</div>',
+        unsafe_allow_html=True)
+
+    _profile_options = ["All Connections"] + [p["PROFILE_NAME"] for p in _filtered_profiles]
 
     if "selected_profile" not in st.session_state:
+        st.session_state["selected_profile"] = "All Connections"
+
+    # Reset selection if current profile not in filtered list
+    if st.session_state["selected_profile"] not in _profile_options:
         st.session_state["selected_profile"] = "All Connections"
 
     sel_profile = st.selectbox(
@@ -517,7 +568,7 @@ with st.sidebar:
 
     # Show selected profile info
     if sel_profile != "All Connections":
-        _sel_p = next((p for p in _profiles if p["PROFILE_NAME"] == sel_profile), None)
+        _sel_p = next((p for p in _filtered_profiles if p["PROFILE_NAME"] == sel_profile), None)
         if _sel_p:
             st.markdown(
                 f'<div style="font-family:monospace;font-size:.65rem;color:{TXT_SECONDARY};'
@@ -532,18 +583,6 @@ with st.sidebar:
         st.session_state.current_page = "Connections"
         selected = "Connections"
         st.rerun()
-
-    st.markdown(f"<hr style='border-color:{BORDER}'>", unsafe_allow_html=True)
-    st.session_state["_ai_on"] = st.toggle(
-        "🤖 AI Assist", value=st.session_state.get("_ai_on", False),
-        key="sidebar_ai_toggle",
-        help="Enable Cortex-powered config recommendations and failure explanations.")
-    if st.session_state["_ai_on"]:
-        st.session_state["_ai_model"] = st.selectbox(
-            "Cortex model", AI_MODELS,
-            index=AI_MODELS.index(st.session_state.get("_ai_model", AI_MODEL))
-            if st.session_state.get("_ai_model", AI_MODEL) in AI_MODELS else 0,
-            key="sidebar_ai_model")
 
     st.markdown(f"<hr style='border-color:{BORDER}'>", unsafe_allow_html=True)
 

@@ -84,6 +84,8 @@ Implements the `BaseExtractor` interface for each supported source system.
 | `mysql_incremental.py` | MySQL | `connectorx` (Arrow) | Snappy Parquet files |
 | `teradata_full.py` | Teradata | `TPT` (`tbuild`) | Delimited CSV files |
 | `teradata_incremental.py` | Teradata | `teradatasql` (Arrow) | Snappy Parquet files |
+| `mssql_full.py` | MSSQL | `bcp` (bulk copy) | Pipe-delimited CSV + gzip |
+| `mssql_incremental.py` | MSSQL | `bcp queryout` (CDC filter) | Pipe-delimited CSV + gzip |
 
 **Interface contract** (defined in `extractors/__init__.py`):
 
@@ -92,7 +94,7 @@ class BaseExtractor(ABC):
     def extract_full(config, src_cfg, output_dir) -> ExtractionResult
     def extract_incremental(config, src_cfg, output_dir, source_conn) -> ExtractionResult
     @property
-    def source_type -> str  # "mysql" | "teradata"
+    def source_type -> str  # "mysql" | "teradata" | "mssql"
 ```
 
 `ExtractionResult` carries: `files`, `row_count`, `watermark_to`, `file_format`, `engine`, `skipped`, `skip_reason`.
@@ -111,8 +113,9 @@ Reads source metadata and generates Snowflake `CREATE TABLE` statements.
 |--------|--------|-----------------|
 | `mysql.py` | MySQL | `information_schema.columns` |
 | `teradata.py` | Teradata | `DBC.ColumnsV` |
+| `mssql.py` | MSSQL | `INFORMATION_SCHEMA.COLUMNS` (via pyodbc) |
 
-Both generators:
+All generators:
 - Map source types to Snowflake equivalents (100+ type mappings)
 - Append audit columns: `_LOAD_TS`, `_SRC_FILE`, `_BATCH_ID`, `_IS_DELETED`, `_DELETED_AT`
 - Support SCD Type 2 (adds `_VALID_FROM`, `_VALID_TO`, `_IS_CURRENT`)
@@ -154,12 +157,12 @@ Each module exports a `render(conn)` function called by `app.py`.
 ## Data Flow (End to End)
 
 ```
-Source DB (MySQL/Teradata)
+Source DB (MySQL / Teradata / MSSQL)
     │
-    │  extractors/  ─── pull data via mysqlsh / TPT / connectorx / teradatasql
+    │  extractors/  ─── pull data via mysqlsh / TPT / connectorx / teradatasql / bcp
     │
     ▼
-Local/S3/Azure/Stage  (Parquet or TSV files)
+Local/S3/Azure/Stage  (Parquet, TSV, or gzipped CSV files)
     │
     │  storage/  ─── upload to landing zone
     │
@@ -201,6 +204,159 @@ Created by `setup.sql`:
 | `PIPELINE_STEP_LOG` | Per-step granular progress |
 | `FILE_MANIFEST` | Extracted file registry |
 | `DMT_SETTINGS` | App-level key/value settings |
-| `PARQUET_FMT` / `TSV_ZSTD_FMT` / `CSV_FMT` | File format objects |
+| `PARQUET_FMT` / `TSV_ZSTD_FMT` / `CSV_FMT` / `BCP_PIPE_FMT` | File format objects |
 | `DMT_STAGE` | Internal named stage for file PUT |
 | `DMT_EXT_S3` / `DMT_EXT_AZURE` | External stage definitions |
+
+---
+
+## MSSQL Integration Details
+
+### Source Schema Handling
+
+MSSQL uses a 3-part naming convention: `database.schema.table`. Unlike MySQL (which has no schema layer) and Teradata (where schema maps to database), MSSQL requires an explicit schema name.
+
+The `MIGRATION_CONFIG` table includes a `SOURCE_SCHEMA` column:
+- **MSSQL**: `"dbo"`, `"Sales"`, `"HumanResources"` (required, defaults to `"dbo"`)
+- **MySQL**: `NULL` (MySQL's `SOURCE_DB` IS the schema)
+- **Teradata**: `NULL` (uses `TARGET_SCHEMA` for Snowflake-side override)
+
+The unique constraint on `MIGRATION_CONFIG` is: `(CONNECTION_PROFILE, SOURCE_DB, SOURCE_SCHEMA, SOURCE_TABLE)` — this prevents collisions when the same table name exists in multiple schemas (e.g., `dbo.Users` vs `Sales.Users`).
+
+### BCP Extraction Engine
+
+MSSQL extraction uses Microsoft's **BCP (Bulk Copy Program)** — a high-performance command-line tool for bulk data export/import.
+
+#### Full Load Flow
+
+```
+bcp "DBName.schema.Table" out "file.csv" -S server -U user -P pass -c -t "|" -C 65001
+    │
+    ▼  (if file > 512MB)
+split_and_gzip()  →  file_part1.csv.gz, file_part2.csv.gz, ...
+    │
+    ▼
+storage backend upload → Snowflake COPY INTO (using BCP_PIPE_FMT)
+```
+
+#### Incremental Load Flow
+
+```
+build_cdc_condition()  →  WHERE clause
+    │
+    ▼
+bcp "SELECT * FROM [schema].[Table] WHERE ..." queryout "file.csv" ...
+    │
+    ▼
+gzip → storage upload → COPY INTO + MERGE
+```
+
+#### BCP Command Variants
+
+| Scenario | BCP Mode | Command Pattern |
+|----------|----------|-----------------|
+| Full table, no filter | `out` | `bcp "DB.schema.Table" out file.csv ...` |
+| Filtered or incremental | `queryout` | `bcp "SELECT ... WHERE ..." queryout file.csv ...` |
+| Custom SQL override | `queryout` | `bcp "user_sql" queryout file.csv ...` |
+
+#### File Format
+
+BCP exports use pipe-delimited (`|`) CSV with UTF-8 encoding. The corresponding Snowflake file format is `BCP_PIPE_FMT`:
+
+```sql
+FILE_FORMAT = (
+    TYPE = CSV,
+    FIELD_DELIMITER = '|',
+    COMPRESSION = GZIP,
+    ENCODING = 'UTF8',
+    NULL_IF = (''),
+    ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE
+)
+```
+
+#### Large File Handling
+
+Files larger than 512 MB are split at row boundaries (no mid-row splits) and individually gzip-compressed. This ensures:
+- Snowflake can parallelize ingestion across multiple files
+- No single file exceeds optimal COPY INTO chunk size
+- Memory-bounded processing (streaming split, not in-memory)
+
+### CDC Modes (Change Data Capture)
+
+MSSQL incremental extraction supports two watermark strategies:
+
+#### Timestamp Mode (`WATERMARK_TYPE = 'time'`)
+
+Captures inserts AND updates using a datetime column:
+
+```sql
+-- Config: WATERMARK_COL = "UpdatedAt", LAST_LOADED_AT = "2024-01-15 10:30:00"
+-- Generated condition:
+WHERE ([UpdatedAt] >= TRY_CAST('2024-01-15 10:30:00' AS DATETIME2))
+```
+
+Multi-column CDC (comma-separated `WATERMARK_COL`):
+
+```sql
+-- Config: WATERMARK_COL = "CreatedAt,ModifiedAt"
+-- Generated condition:
+WHERE (([CreatedAt] >= TRY_CAST('...' AS DATETIME2))
+   OR  ([ModifiedAt] >= TRY_CAST('...' AS DATETIME2)))
+```
+
+#### ID Mode (`WATERMARK_TYPE = 'id'`)
+
+Captures inserts only using an auto-increment column:
+
+```sql
+-- Config: WATERMARK_COL = "OrderID", LAST_LOADED_KEY = "50000"
+-- Generated condition:
+WHERE [OrderID] > 50000
+```
+
+### MSSQL Type Mapping (Key Conversions)
+
+| MSSQL Type | Snowflake Type | Notes |
+|-----------|---------------|-------|
+| `int` | `NUMBER(10,0)` | |
+| `bigint` | `NUMBER(19,0)` | |
+| `bit` | `BOOLEAN` | |
+| `money` | `NUMBER(19,4)` | Preserves cents |
+| `datetime2` | `TIMESTAMP_NTZ` | |
+| `datetimeoffset` | `TIMESTAMP_TZ` | Preserves timezone |
+| `varchar(n)` / `nvarchar(n)` | `VARCHAR(n)` | Max 16MB |
+| `decimal(p,s)` | `NUMBER(p,s)` | |
+| `uniqueidentifier` | `VARCHAR(36)` | GUIDs as text |
+| `xml` | `VARIANT` | Semi-structured |
+| `geography` / `geometry` | `VARCHAR(16777216)` | WKT text |
+| `rowversion` / `timestamp` | `BINARY(8)` | Internal versioning |
+
+### Connection Profile Example
+
+```
+PROFILE_NAME:  azure_sql_prod
+SOURCE_TYPE:   mssql
+HOST:          myserver.database.windows.net
+PORT:          1433
+USERNAME:      etl_user
+PASSWORD:      (via AUTH_SECRET env var)
+EXTRA_PARAMS:  {"driver": "ODBC Driver 17 for SQL Server"}
+```
+
+### Environment Variables
+
+```bash
+# Required for BCP extraction (used by extractor if not in CONNECTION_PROFILES)
+MSSQL_SERVER=myserver.database.windows.net
+MSSQL_USER=etl_user
+MSSQL_PASSWORD=secret
+MSSQL_PORT=1433
+MSSQL_DRIVER="ODBC Driver 17 for SQL Server"
+```
+
+### Prerequisites
+
+- **ODBC Driver**: Microsoft ODBC Driver 17+ for SQL Server must be installed on the host
+- **BCP utility**: Included with SQL Server command-line tools (`mssql-tools` package on Linux)
+- **Python**: `pyodbc>=4.0.35` (in `requirements.txt`)
+

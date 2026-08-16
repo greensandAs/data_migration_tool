@@ -19,6 +19,9 @@ connectorx>=0.3.2
 # ── Teradata source ───────────────────────────────────────────────────────────
 teradatasql>=20.0.0.0
 
+# ── MSSQL source ─────────────────────────────────────────────────────────────
+pyodbc>=4.0.35                   # Requires ODBC Driver 17+ for SQL Server
+
 # ── Data processing ───────────────────────────────────────────────────────────
 pyarrow>=14.0.0
 pandas>=2.0.0

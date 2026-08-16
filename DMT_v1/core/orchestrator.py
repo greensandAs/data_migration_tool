@@ -117,6 +117,15 @@ def _build_src_cfg(profile: dict) -> dict:
             "password": profile.get("PASSWORD") or os.getenv("TD_PASSWORD", ""),
             "logmech": profile.get("LOGMECH") or os.getenv("TD_LOGMECH", "TD2"),
         }
+    if source_type == "mssql":
+        return {
+            "host": profile.get("HOST") or os.getenv("MSSQL_SERVER", ""),
+            "port": int(profile.get("PORT") or os.getenv("MSSQL_PORT", "1433")),
+            "user": profile.get("USERNAME") or os.getenv("MSSQL_USER", ""),
+            "password": profile.get("PASSWORD") or os.getenv("MSSQL_PASSWORD", ""),
+            "driver": (profile.get("EXTRA_PARAMS") or {}).get("driver")
+                      or os.getenv("MSSQL_DRIVER", "ODBC Driver 17 for SQL Server"),
+        }
     # Default: MySQL
     out = {
         "host": profile.get("HOST") or os.getenv("MYSQL_HOST", "localhost"),
@@ -142,10 +151,25 @@ def _teradata_connect(src_cfg: dict):
         logmech=src_cfg.get("logmech", "TD2"))
 
 
+def _mssql_connect(src_cfg: dict):
+    import pyodbc
+    driver = src_cfg.get("driver", "ODBC Driver 17 for SQL Server")
+    server = src_cfg["host"]
+    port = src_cfg.get("port", 1433)
+    conn_str = (
+        f"DRIVER={{{driver}}};SERVER={server},{port};"
+        f"UID={src_cfg['user']};PWD={src_cfg['password']};"
+        "Encrypt=yes;TrustServerCertificate=yes;"
+    )
+    return pyodbc.connect(conn_str)
+
+
 def _source_connect(source_type: str, src_cfg: dict):
     """Connect to source database based on source type."""
     if source_type == "teradata":
         return _teradata_connect(src_cfg)
+    if source_type == "mssql":
+        return _mssql_connect(src_cfg)
     return _mysql_connect(src_cfg)
 
 
@@ -377,6 +401,9 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
                     # Propagate resolved names to config for downstream steps
                     config["TARGET_TABLE"] = meta["target_table"]
                     config["TARGET_SCHEMA"] = meta["target_schema"]
+                elif source_type == "mssql":
+                    from ddl_generators.mssql import generate_and_apply as mssql_generate_and_apply
+                    meta = mssql_generate_and_apply(sf_conn, source_conn, config)
                 else:
                     meta = generate_and_apply(sf_conn, source_conn, config)
                 columns = meta["columns"]
@@ -402,6 +429,17 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
                     else:
                         from extractors.teradata_incremental import TeradataIncrementalExtractor
                         extractor = TeradataIncrementalExtractor()
+                        extraction_result = extractor.extract_incremental(
+                            config, src_cfg, export_base, source_conn=source_conn)
+                elif source_type == "mssql":
+                    if is_full:
+                        from extractors.mssql_full import MSSQLFullExtractor
+                        extractor = MSSQLFullExtractor()
+                        extraction_result = extractor.extract_full(
+                            config, src_cfg, export_base)
+                    else:
+                        from extractors.mssql_incremental import MSSQLIncrementalExtractor
+                        extractor = MSSQLIncrementalExtractor()
                         extraction_result = extractor.extract_incremental(
                             config, src_cfg, export_base, source_conn=source_conn)
                 else:

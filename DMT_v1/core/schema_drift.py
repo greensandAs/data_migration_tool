@@ -2,9 +2,9 @@
 # Co-authored with CoCo
 """schema_drift.py — Additive schema-drift handling (RAW layer only).
 
-Before each load, compares MySQL columns against the existing Snowflake table:
-  - New columns in MySQL -> ALTER TABLE ADD COLUMN
-  - Dropped columns in MySQL -> warn only (preserve Snowflake data)
+Before each load, compares source columns against the existing Snowflake table:
+  - New columns in source -> ALTER TABLE ADD COLUMN
+  - Dropped columns in source -> warn only (preserve Snowflake data)
 """
 from __future__ import annotations
 
@@ -34,6 +34,10 @@ def detect_and_apply(cur, source_conn, config: dict, source_type: str = "mysql")
     if source_type == "teradata":
         from ddl_generators.teradata import get_teradata_columns
         source_cols = get_teradata_columns(source_conn, config["SOURCE_DB"], config["SOURCE_TABLE"])
+    elif source_type == "mssql":
+        from ddl_generators.mssql import get_mssql_columns
+        source_schema = config.get("SOURCE_SCHEMA") or "dbo"
+        source_cols = get_mssql_columns(source_conn, config["SOURCE_DB"], source_schema, config["SOURCE_TABLE"])
     else:
         source_cols = get_mysql_columns(source_conn, config["SOURCE_DB"], config["SOURCE_TABLE"])
 

@@ -157,7 +157,7 @@ def render(conn):
             ORDER BY STATUS, STORAGE_TYPE
         """)
         if manifest_df.empty:
-            from shared import empty_state
+            from utils.shared import empty_state
             empty_state("📁", "No Files", "No files in manifest for the last 7 days.")
         else:
             st.dataframe(manifest_df, use_container_width=True, hide_index=True)

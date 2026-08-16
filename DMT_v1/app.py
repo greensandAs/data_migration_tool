@@ -1,5 +1,4 @@
 # Unified Streamlit app entry point for DMT v1 — multi-source data migration toolkit.
-# Co-authored with CoCo
 """app.py — Main Streamlit entry point for DMT v1.
 
 Modular page-based layout with Tiger Analytics branding. Each page is a
@@ -23,6 +22,7 @@ from views.config import render as render_config
 from views.run import render as render_run
 from views.history import render as render_history
 from views.monitoring import render as render_monitoring
+from views.ddl import render as render_ddl
 
 try:
     from dotenv import load_dotenv
@@ -434,6 +434,7 @@ PAGES = {
     "Dashboard": render_dashboard,
     "Connections": render_connections,
     "Config": render_config,
+    "DDL": render_ddl,
     "Run": render_run,
     "History": render_history,
     "Monitoring": render_monitoring,
@@ -465,6 +466,7 @@ with st.sidebar:
     NAV_ICONS = {
         "Dashboard": "📊",
         "Config": "⚙️",
+        "DDL": "🏗️",
         "Run": "▶️",
         "History": "📜",
         "Monitoring": "🩺",
@@ -491,7 +493,7 @@ with st.sidebar:
     if "_profiles_list" not in st.session_state:
         try:
             _cur = _sf_conn().cursor()
-            import connection_manager as _cm
+            from metadata import connection_manager as _cm
             st.session_state["_profiles_list"] = _cm.list_profiles(_cur, active_only=True)
             _cur.close()
         except Exception:

@@ -62,7 +62,7 @@ def render(conn):
     profile_filter = None if _profile == "All Connections" else _profile
 
     if not profile_filter:
-        from shared import empty_state
+        from utils.shared import empty_state
         empty_state("🔌", "Select a Source Connection",
                     "Choose a connection from the <b>Source Connection</b> dropdown "
                     "in the sidebar to view its run history.")
@@ -92,7 +92,7 @@ def render(conn):
 
     hist = st.session_state[cache_key]
     if hist.empty:
-        from shared import empty_state
+        from utils.shared import empty_state
         empty_state("📜", "No Run History",
                     "Run a pipeline from the <b>▶️ Run</b> page to see execution history here.")
         cur.close()
@@ -218,7 +218,7 @@ def render(conn):
 
                         # AI failure explainer
                         try:
-                            from shared import ai_enabled, cortex_complete
+                            from utils.shared import ai_enabled, cortex_complete
                             if ai_enabled() and row.get("ERROR_MESSAGE"):
                                 ekey = f"_ai_err_{row.get('SOURCE_DB','')}.{row.get('SOURCE_TABLE','')}.{ei}"
                                 if st.button("🤖 Explain failure", key=f"btn{ekey}"):
@@ -249,7 +249,7 @@ def render(conn):
                   disabled=(current_page >= total_pages - 1),
                   on_click=lambda p=current_page: st.session_state.update(hist_page=p + 1))
     else:
-        from shared import empty_state
+        from utils.shared import empty_state
         empty_state("🔍", "No Matches", "No runs match the current filters.")
 
     cur.close()

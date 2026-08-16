@@ -11,8 +11,8 @@ from __future__ import annotations
 import streamlit as st
 import time
 
-import config_manager
-import connection_manager
+from metadata import config_manager
+from metadata import connection_manager
 
 # Brand tokens
 TA_NAVY = "#0F1B2D"
@@ -45,7 +45,7 @@ def _group_log_by_table(text: str, known: set | None = None) -> dict:
 
 def render(conn):
     """Main render function for the Run page."""
-    import shared
+    from utils import shared
 
     st.markdown('<div class="section-header">Pipeline Controls</div>',
                 unsafe_allow_html=True)
@@ -59,7 +59,7 @@ def render(conn):
 
     # Empty state if no connection selected
     if not profile_filter:
-        from shared import empty_state
+        from utils.shared import empty_state
         empty_state("▶️", "Select a Source Connection",
                     "Choose a connection from the <b>Source Connection</b> dropdown "
                     "in the sidebar to run pipelines.")
@@ -86,7 +86,7 @@ def render(conn):
 
     # -- Launch logic --
     def _launch(mode_flag: str | None, label: str):
-        args = ["orchestrator.py"]
+        args = ["core/orchestrator.py"]
         if profile_filter:
             args += ["--profile", profile_filter]
         if sel_table != "All Active Tables":
@@ -113,7 +113,7 @@ def render(conn):
         tbl = config_manager.get_by_id(cur, config_id)
         if tbl and not _running:
             tbl_name = tbl.get("SOURCE_TABLE", "")
-            args = ["orchestrator.py", "--table", tbl_name]
+            args = ["core/orchestrator.py", "--table", tbl_name]
             if run_mode == "resume":
                 args.append("--resume")
             shared.start_job(args, f"Resume · {tbl_name}")

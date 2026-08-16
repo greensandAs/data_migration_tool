@@ -74,7 +74,7 @@ def render(conn):
         with c2:
             host = st.text_input("Host", placeholder="10.0.0.1 or hostname")
             port = st.number_input("Port", value=3306, min_value=1, max_value=65535,
-                                   help="MySQL: 3306, Teradata: 1025 (not used by teradatasql)")
+                                   help="MySQL: 3306, Teradata: 1025, MSSQL: 1433")
         with c3:
             username = st.text_input("Username", placeholder="etl_user")
             password = st.text_input("Password", type="password",
@@ -143,12 +143,9 @@ def render(conn):
                     pwd = p.get("PASSWORD") or os.getenv(p.get("AUTH_SECRET") or "", "") or ""
                     if not pwd:
                         st.warning("No password found in profile or environment.")
-                    elif src == "mysql":
-                        ok, msg = _test_mysql(p["HOST"], int(p["PORT"]), p["USERNAME"], pwd)
-                    elif src == "teradata":
-                        ok, msg = _test_teradata(p["HOST"], int(p["PORT"]), p["USERNAME"], pwd)
                     else:
-                        ok, msg = False, f"Unknown: {src}"
+                        test_profile = {**p, "PASSWORD": pwd}
+                        ok, msg = connection_manager.test_connection(test_profile)
                     if pwd:
                         if ok:
                             st.success(f"✅ Connected — {msg}")

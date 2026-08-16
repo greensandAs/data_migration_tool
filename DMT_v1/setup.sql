@@ -33,14 +33,14 @@ CREATE TABLE IF NOT EXISTS DMT_SETTINGS (
 -- Default: allow all implemented sources. Remove entries to restrict.
 -- Example: SET SETTING_VALUE = 'mysql' to only allow MySQL migrations.
 INSERT INTO DMT_SETTINGS (SETTING_KEY, SETTING_VALUE, DESCRIPTION)
-SELECT 'ALLOWED_SOURCES', 'mysql,teradata', 'Comma-separated list of enabled source types. Options: mysql, teradata, postgres, oracle'
+SELECT 'ALLOWED_SOURCES', 'mysql,teradata,mssql', 'Comma-separated list of enabled source types. Options: mysql, teradata, mssql, postgres, oracle'
 WHERE NOT EXISTS (SELECT 1 FROM DMT_SETTINGS WHERE SETTING_KEY = 'ALLOWED_SOURCES');
 
 -- ─── Connection profiles (multi-source registry) ─────────────────────────────
 -- Passwords are NOT stored here — use Snowflake SECRETs or environment variables.
 CREATE TABLE IF NOT EXISTS CONNECTION_PROFILES (
     PROFILE_NAME    VARCHAR        NOT NULL,
-    SOURCE_TYPE     VARCHAR        NOT NULL,       -- mysql | teradata | postgres | oracle
+    SOURCE_TYPE     VARCHAR        NOT NULL,       -- mysql | teradata | mssql | postgres | oracle
     HOST            VARCHAR,
     PORT            NUMBER,
     USERNAME        VARCHAR,
@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS MIGRATION_CONFIG (
     CONNECTION_PROFILE  VARCHAR        NOT NULL,
     SOURCE_DB           VARCHAR        NOT NULL,
     SOURCE_TABLE        VARCHAR        NOT NULL,
+    SOURCE_SCHEMA       VARCHAR,                    -- MSSQL: dbo, Sales, etc. (NULL for MySQL/Teradata)
     TARGET_DB           VARCHAR,                    -- defaults to UPPER(SOURCE_DB) at runtime
     TARGET_TABLE        VARCHAR,                    -- defaults to UPPER(SOURCE_TABLE) at runtime
     TARGET_SCHEMA       VARCHAR,                    -- Teradata only: override schema (NULL = auto-resolve)
@@ -87,8 +88,8 @@ CREATE TABLE IF NOT EXISTS MIGRATION_CONFIG (
     SCD_TYPE            NUMBER         DEFAULT 1,   -- 0=append, 1=upsert, 2=history
     FILTER_CONDITION    VARCHAR,                    -- static WHERE clause for extraction
     CUSTOM_SQL          VARCHAR,                    -- full SELECT override (reserved for future)
-    DELIMITER           VARCHAR        DEFAULT ',', -- Teradata TPT export delimiter
-    TRIM                BOOLEAN        DEFAULT FALSE, -- Teradata: TRIM columns in export
+    DELIMITER           VARCHAR        DEFAULT ',', -- Export field delimiter (Teradata TPT, MSSQL BCP)
+    TRIM                BOOLEAN        DEFAULT FALSE, -- Trim column whitespace in export (Teradata, MSSQL)
 
     -- Execution control
     EXECUTION_MODE      VARCHAR        DEFAULT 'FULL',  -- FULL | EXTRACT_ONLY | LOAD_ONLY
@@ -103,7 +104,7 @@ CREATE TABLE IF NOT EXISTS MIGRATION_CONFIG (
     UPDATED_AT          TIMESTAMP_NTZ  DEFAULT CURRENT_TIMESTAMP(),
 
     CONSTRAINT PK_MIG_CONFIG PRIMARY KEY (CONFIG_ID),
-    CONSTRAINT UQ_MIG_CONFIG UNIQUE (CONNECTION_PROFILE, SOURCE_DB, SOURCE_TABLE)
+    CONSTRAINT UQ_MIG_CONFIG UNIQUE (CONNECTION_PROFILE, SOURCE_DB, SOURCE_SCHEMA, SOURCE_TABLE)
 );
 
 -- ─── Pipeline step log (step-level state for retry) ──────────────────────────
@@ -157,7 +158,7 @@ CREATE TABLE IF NOT EXISTS RUN_LOG (
     TARGET_DB       VARCHAR,
     TARGET_TABLE    VARCHAR,
     LOAD_TYPE       VARCHAR,                        -- full | incremental | reconcile | validate
-    ENGINE          VARCHAR,                        -- mysqlsh | connectorx | tpt | reconciler | validator
+    ENGINE          VARCHAR,                        -- mysqlsh | connectorx | tpt | bcp | reconciler | validator
     ROWS_EXTRACTED  NUMBER,
     ROWS_LOADED     NUMBER,
     WATERMARK_FROM  VARCHAR,
@@ -245,6 +246,20 @@ CREATE FILE FORMAT IF NOT EXISTS HISTLOAD_DB.META.CSV_FMT
     DATE_FORMAT      = 'AUTO'
     COMMENT          = 'CSV format for Teradata TPT exports';
 
+CREATE FILE FORMAT IF NOT EXISTS HISTLOAD_DB.META.BCP_PIPE_FMT
+    TYPE             = CSV
+    FIELD_DELIMITER  = '|'
+    COMPRESSION      = GZIP
+    FIELD_OPTIONALLY_ENCLOSED_BY = NONE
+    SKIP_HEADER      = 0
+    NULL_IF          = ('')
+    EMPTY_FIELD_AS_NULL = TRUE
+    ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE
+    TIMESTAMP_FORMAT = 'AUTO'
+    DATE_FORMAT      = 'AUTO'
+    ENCODING         = 'UTF8'
+    COMMENT          = 'Pipe-delimited gzip format for MSSQL BCP exports';
+
 -- ─── Reporting view ──────────────────────────────────────────────────────────
 CREATE OR REPLACE VIEW HISTLOAD_DB.META.V_RUN_LOG AS
 SELECT
@@ -294,3 +309,14 @@ SELECT
     p.RETRY_COUNT
 FROM HISTLOAD_DB.META.PIPELINE_STEP_LOG p
 ORDER BY p.RUN_ID DESC, p.STEP_ORDER;
+
+-- ─── Schema migrations (idempotent ALTER for existing installations) ─────────
+-- Add SOURCE_SCHEMA column for MSSQL support (NULL for MySQL/Teradata).
+ALTER TABLE HISTLOAD_DB.META.MIGRATION_CONFIG
+    ADD COLUMN IF NOT EXISTS SOURCE_SCHEMA VARCHAR;
+
+-- Update ALLOWED_SOURCES to include mssql for existing installations.
+MERGE INTO HISTLOAD_DB.META.DMT_SETTINGS t
+USING (SELECT 'ALLOWED_SOURCES' AS K) s ON t.SETTING_KEY = s.K
+WHEN MATCHED AND NOT CONTAINS(t.SETTING_VALUE, 'mssql') THEN
+    UPDATE SET SETTING_VALUE = t.SETTING_VALUE || ',mssql', UPDATED_AT = CURRENT_TIMESTAMP();

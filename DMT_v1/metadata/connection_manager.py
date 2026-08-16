@@ -117,3 +117,49 @@ def get_source_type(cur, profile_name: str) -> str | None:
         (profile_name,))
     row = cur.fetchone()
     return row[0] if row else None
+
+
+def test_connection(profile: dict) -> tuple[bool, str]:
+    """Test connectivity to source database. Returns (success, message)."""
+    source_type = (profile.get("SOURCE_TYPE") or "").lower()
+    host = profile.get("HOST", "")
+    port = int(profile.get("PORT") or 0)
+    user = profile.get("USERNAME", "")
+    password = profile.get("PASSWORD", "")
+
+    try:
+        if source_type == "mysql":
+            import mysql.connector
+            conn = mysql.connector.connect(
+                host=host, port=port or 3306, user=user, password=password,
+                connect_timeout=10)
+            conn.close()
+            return True, "MySQL connection successful"
+
+        elif source_type == "teradata":
+            import teradatasql
+            logmech = profile.get("LOGMECH") or "TD2"
+            conn = teradatasql.connect(host=host, user=user, password=password,
+                                       logmech=logmech)
+            conn.close()
+            return True, "Teradata connection successful"
+
+        elif source_type == "mssql":
+            import pyodbc
+            extra = profile.get("EXTRA_PARAMS") or {}
+            driver = extra.get("driver", "ODBC Driver 17 for SQL Server")
+            conn_str = (
+                f"DRIVER={{{driver}}};SERVER={host},{port or 1433};"
+                f"UID={user};PWD={password};"
+                "Encrypt=yes;TrustServerCertificate=yes;"
+                "Connection Timeout=10;"
+            )
+            conn = pyodbc.connect(conn_str)
+            conn.close()
+            return True, "MSSQL connection successful"
+
+        else:
+            return False, f"Unknown source type: {source_type}"
+
+    except Exception as e:
+        return False, str(e)[:500]

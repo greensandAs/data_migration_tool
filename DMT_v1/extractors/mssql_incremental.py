@@ -1,0 +1,168 @@
+# MSSQL incremental extraction via BCP with CDC condition filtering.
+"""extractors.mssql_incremental — Incremental extraction using BCP queryout.
+
+Builds a WHERE condition based on the watermark (timestamp or ID cursor),
+then uses BCP queryout to export only the delta rows. Produces gzip-compressed
+CSV files for Snowflake ingestion.
+
+Supports two cursor modes:
+  - time: WHERE cdc_col >= last_loaded_at AND cdc_col < current_ts
+  - id:   WHERE pk_col > last_loaded_key (captures inserts only)
+"""
+from __future__ import annotations
+
+import gzip
+import os
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+from extractors import BaseExtractor, ExtractionResult
+
+
+class MSSQLIncrementalExtractor(BaseExtractor):
+
+    @property
+    def source_type(self) -> str:
+        return "mssql"
+
+    def extract_full(self, config: dict, src_cfg: dict,
+                     output_dir: str | Path) -> ExtractionResult:
+        raise NotImplementedError("Use MSSQLFullExtractor for full loads")
+
+    def extract_incremental(self, config: dict, src_cfg: dict,
+                            output_dir: str | Path,
+                            source_conn=None) -> ExtractionResult:
+        """Extract delta rows via BCP queryout with CDC condition."""
+        out_dir = Path(output_dir) / "incremental"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        src_db = config["SOURCE_DB"]
+        src_schema = config.get("SOURCE_SCHEMA") or "dbo"
+        src_table = config["SOURCE_TABLE"]
+        delimiter = config.get("DELIMITER") or "|"
+
+        server = src_cfg.get("host", "")
+        user = src_cfg.get("user", "")
+        password = src_cfg.get("password", "")
+
+        # Build CDC condition
+        wm_col = config.get("WATERMARK_COL")
+        wm_type = (config.get("WATERMARK_TYPE") or "time").lower()
+
+        if not wm_col:
+            return ExtractionResult(
+                files=[], row_count=0, engine="bcp",
+                skipped=True, skip_reason="No WATERMARK_COL configured")
+
+        condition = self._build_cdc_condition(config, wm_col, wm_type)
+        if not condition or condition == "1=1":
+            return ExtractionResult(
+                files=[], row_count=0, engine="bcp",
+                skipped=True, skip_reason="No valid CDC condition (first run?)")
+
+        # BCP queryout with condition
+        query = f"SELECT * FROM [{src_schema}].[{src_table}] WHERE {condition}"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{src_db}_{src_schema}_{src_table}_incr_{ts}.csv"
+        filepath = out_dir / filename
+
+        bcp_cmd = (
+            f'bcp "{query}" queryout "{filepath}" '
+            f'-S {server} -d {src_db} -U {user} -P {password} '
+            f'-c -t "{delimiter}" -C 65001'
+        )
+
+        print(f"   BCP incr: [{src_schema}].[{src_table}] WHERE {condition[:80]}...")
+        proc = subprocess.run(
+            bcp_cmd, shell=True, capture_output=True, text=True, timeout=7200)
+
+        if proc.returncode not in (0, 4):
+            err = proc.stderr.strip() or proc.stdout.strip()
+            print(f"   ❌ BCP failed (rc={proc.returncode}): {err[:200]}")
+            return ExtractionResult(
+                files=[], row_count=0, engine="bcp",
+                skipped=True, skip_reason=f"BCP error: {err[:500]}")
+
+        # Count rows
+        row_count = 0
+        if filepath.exists():
+            try:
+                with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                    row_count = sum(1 for _ in f)
+            except Exception:
+                pass
+
+        if row_count == 0:
+            print("   ⚠️ No new rows — skipping load")
+            try:
+                filepath.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return ExtractionResult(
+                files=[], row_count=0, engine="bcp",
+                skipped=True, skip_reason="No new rows in CDC window")
+
+        # Gzip the file
+        gz_path = out_dir / (filepath.name + ".gz")
+        with open(filepath, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+            while True:
+                block = f_in.read(8 * 1024 * 1024)
+                if not block:
+                    break
+                f_out.write(block)
+        filepath.unlink(missing_ok=True)
+
+        # Determine new watermark value
+        watermark_to = self._get_new_watermark(config, wm_col, wm_type, source_conn)
+
+        print(f"   ✅ BCP incr: {row_count} rows → {gz_path.name}")
+        return ExtractionResult(
+            files=[gz_path], row_count=row_count,
+            watermark_to=watermark_to,
+            file_format="csv_gzip", engine="bcp")
+
+    def _build_cdc_condition(self, config: dict, wm_col: str, wm_type: str) -> str:
+        """Build WHERE clause based on last-loaded watermark."""
+        if wm_type == "time":
+            last_ts = config.get("LAST_LOADED_AT")
+            if not last_ts:
+                return "1=1"  # First run — full extract handled by orchestrator
+            # Support multiple CDC columns (comma-separated)
+            cols = [c.strip() for c in wm_col.split(",")]
+            parts = []
+            for col in cols:
+                parts.append(
+                    f"(TRY_CAST('{last_ts}' AS DATETIME2) IS NULL OR "
+                    f"[{col}] >= TRY_CAST('{last_ts}' AS DATETIME2))")
+            return "(" + " OR ".join(parts) + ")"
+
+        elif wm_type == "id":
+            last_key = config.get("LAST_LOADED_KEY")
+            if not last_key:
+                return "1=1"
+            col = wm_col.split(",")[0].strip()
+            return f"[{col}] > {last_key}"
+
+        return "1=1"
+
+    def _get_new_watermark(self, config: dict, wm_col: str, wm_type: str,
+                           source_conn) -> str | None:
+        """Query source for the current max watermark value."""
+        if not source_conn:
+            return None
+
+        src_schema = config.get("SOURCE_SCHEMA") or "dbo"
+        src_table = config["SOURCE_TABLE"]
+        col = wm_col.split(",")[0].strip()
+
+        try:
+            cur = source_conn.cursor()
+            cur.execute(f"SELECT MAX([{col}]) FROM [{src_schema}].[{src_table}]")
+            row = cur.fetchone()
+            cur.close()
+            if row and row[0] is not None:
+                return str(row[0])
+        except Exception:
+            pass
+        return None

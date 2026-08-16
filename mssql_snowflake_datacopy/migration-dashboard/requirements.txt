@@ -1,0 +1,5 @@
+streamlit
+snowflake-connector-python>=3.6.0
+pyodbc
+pandas
+python-dotenv>=1.0.0

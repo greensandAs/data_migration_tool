@@ -219,27 +219,17 @@ def build_table_ddl(db: str, target_table: str, cols: list[tuple],
 def _resolve_td_schema(config: dict) -> str:
     """Resolve target schema for Teradata tables.
 
-    Priority:
-      1. Explicit TARGET_SCHEMA from config
-      2. SOURCE_DB (if TARGET_DB differs from SOURCE_DB → consolidation mode)
-      3. RAW (default, same as MySQL)
+    Default: RAW (same as MySQL).
+    Override: explicit TARGET_SCHEMA from config.
     """
     if config.get("TARGET_SCHEMA"):
         return config["TARGET_SCHEMA"].strip().upper()
-    tgt_db = (config.get("TARGET_DB") or "").strip().upper()
-    src_db = config["SOURCE_DB"].strip().upper()
-    if tgt_db and tgt_db != src_db:
-        # Consolidation: TD database becomes the schema
-        return src_db
     return RAW_SCHEMA
 
 
 def _resolve_td_table_name(config: dict) -> str:
-    """Resolve target table name for Teradata — appends _RAW suffix."""
-    base = config.get("TARGET_TABLE") or config["SOURCE_TABLE"].upper()
-    if not base.endswith("_RAW"):
-        return f"{base}_RAW"
-    return base
+    """Resolve target table name for Teradata — same as MySQL (no suffix)."""
+    return config.get("TARGET_TABLE") or config["SOURCE_TABLE"].upper()
 
 
 def generate_and_apply(sf_conn, td_conn, config: dict) -> dict:

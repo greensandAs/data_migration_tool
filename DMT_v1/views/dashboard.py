@@ -10,8 +10,8 @@ from __future__ import annotations
 import streamlit as st
 import pandas as pd
 
-import config_manager
-import connection_manager
+from metadata import config_manager
+from metadata import connection_manager
 
 
 # Import brand tokens from app (available at runtime since app.py imports us)
@@ -114,7 +114,7 @@ def render(conn):
     tables = config_manager.list_all(cur, connection_profile=profile_filter)
 
     if not tables:
-        from shared import empty_state
+        from utils.shared import empty_state
         empty_state("📊", "No Tables Configured",
                     "Go to <b>⚙️ Config</b> to add tables, or select a connection in the sidebar.")
         cur.close()
@@ -157,7 +157,7 @@ def render(conn):
     st.caption(f"Showing {len(filtered)} of {len(tables)} tables")
 
     if not filtered:
-        from shared import empty_state
+        from utils.shared import empty_state
         empty_state("🔍", "No Matches", "No tables match the current filters.")
     elif dview == "Table":
         df = pd.DataFrame([{

@@ -11,7 +11,7 @@ import os
 
 import streamlit as st
 
-import connection_manager
+from metadata import connection_manager
 
 
 class theme:
@@ -64,7 +64,7 @@ def render(conn):
 
     with st.form("create_profile", clear_on_submit=True):
         # Get allowed sources from settings
-        from shared import get_allowed_sources
+        from utils.shared import get_allowed_sources
         allowed_sources = get_allowed_sources(cur)
 
         c1, c2, c3 = st.columns(3)
@@ -110,7 +110,7 @@ def render(conn):
 
     profiles = connection_manager.list_profiles(cur, active_only=False)
     if not profiles:
-        from shared import empty_state
+        from utils.shared import empty_state
         empty_state("🔌", "No Connection Profiles",
                     "Create a new source connection profile using the form above.")
         cur.close()

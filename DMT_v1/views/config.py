@@ -13,8 +13,8 @@ from collections import OrderedDict
 
 import streamlit as st
 
-import config_manager
-import connection_manager
+from metadata import config_manager
+from metadata import connection_manager
 
 # Brand tokens (duplicated from app.py for standalone usability)
 TA_NAVY = "#0F1B2D"
@@ -241,7 +241,7 @@ def _ai_recommend(source_db: str, source_table: str, profile: dict):
         "Respond with ONLY a JSON object: load_type, watermark_col, watermark_type, "
         "merge_keys, partition_col, rationale (one sentence).")
 
-    from shared import cortex_complete
+    from utils.shared import cortex_complete
     raw = cortex_complete(prompt)
     try:
         txt = raw.strip()
@@ -398,7 +398,7 @@ def render(conn):
         sel_profile_name = profile_filter
     else:
         # No specific profile selected — show empty state
-        from shared import empty_state
+        from utils.shared import empty_state
         empty_state("🔌", "Select a Source Connection",
                     "Choose a connection from the <b>Source Connection</b> dropdown "
                     "in the sidebar to view and manage its table configuration.")
@@ -451,6 +451,9 @@ def render(conn):
     # ── Add Table dialog (modal, like the original app) ───────────────────────
     if add_clicked:
         st.session_state["_show_add_dialog"] = True
+    elif st.session_state.get("_editing_table"):
+        # If user clicked edit on a table, dismiss the dialog
+        st.session_state["_show_add_dialog"] = False
 
     if st.session_state.get("_show_add_dialog"):
         _render_add_table_dialog(cur, conn, sel_profile_name, sel_schema)
@@ -540,7 +543,7 @@ def render(conn):
     tables = config_manager.list_all(cur, connection_profile=profile_filter)
 
     if not tables:
-        from shared import empty_state
+        from utils.shared import empty_state
         empty_state("📋", "No Tables Configured",
                     "Select a MySQL schema above and click <b>⚙️ Generate Config</b> "
                     "to auto-discover tables, or use <b>➕ Add Table</b> to add one manually.")
@@ -657,6 +660,7 @@ def render(conn):
                     if h3.button("✖ Close", key=f"close_{cfg_id}",
                                  use_container_width=True):
                         st.session_state["_editing_table"] = None
+                        st.session_state["_show_add_dialog"] = False
                         st.rerun()
 
                     # Review note (if present) with reviewed toggle
@@ -779,6 +783,16 @@ def render(conn):
                         placeholder="e.g. region = 'US' AND status = 'active'",
                         help="Static WHERE clause applied on every extraction run")
 
+                    # Target Schema (Teradata only — for consolidation)
+                    new_target_schema = None
+                    if sel_profile.get("SOURCE_TYPE") == "teradata":
+                        new_target_schema = st.text_input(
+                            "Target Schema (Teradata)",
+                            value=tbl.get("TARGET_SCHEMA") or "",
+                            key=f"ts_{cfg_id}",
+                            placeholder="Leave blank for auto (SOURCE_DB or RAW)",
+                            help="Override Snowflake schema. Blank = auto-resolve (SOURCE_DB if consolidating, else RAW)")
+
                     # Third row: Reconcile + Active (aligned as checkboxes)
                     c7, c8, c9 = st.columns([1, 1, 4])
                     new_reconcile = c7.checkbox("Reconcile",
@@ -791,7 +805,7 @@ def render(conn):
                     b1, b2, b3 = st.columns([2, 1, 5])
                     if b1.button("💾 Save", key=f"save_{cfg_id}",
                                  type="primary", use_container_width=True):
-                        config_manager.upsert(cur, {
+                        save_data = {
                             "CONFIG_ID": cfg_id,
                             "LOAD_TYPE": new_load,
                             "WATERMARK_COL": new_wm.strip().upper() or None,
@@ -805,13 +819,18 @@ def render(conn):
                             "STORAGE_PATH": new_storage_path.strip() or None,
                             "SCD_TYPE": new_scd,
                             "FILTER_CONDITION": new_filter.strip() or None,
-                        })
+                        }
+                        if new_target_schema is not None:
+                            save_data["TARGET_SCHEMA"] = new_target_schema.strip().upper() or None
+                        config_manager.upsert(cur, save_data)
                         st.session_state["_editing_table"] = None
+                        st.session_state["_show_add_dialog"] = False
                         st.rerun()
                     if b2.button("🗑️ Delete", key=f"del_{cfg_id}",
                                  use_container_width=True):
                         config_manager.delete_config(cur, cfg_id)
                         st.session_state["_editing_table"] = None
+                        st.session_state["_show_add_dialog"] = False
                         st.rerun()
 
     cur.close()

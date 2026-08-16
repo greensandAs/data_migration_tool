@@ -241,6 +241,8 @@ CREATE FILE FORMAT IF NOT EXISTS HISTLOAD_DB.META.CSV_FMT
     NULL_IF          = ('')
     EMPTY_FIELD_AS_NULL = TRUE
     ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE
+    TIMESTAMP_FORMAT = 'AUTO'
+    DATE_FORMAT      = 'AUTO'
     COMMENT          = 'CSV format for Teradata TPT exports';
 
 -- ─── Reporting view ──────────────────────────────────────────────────────────

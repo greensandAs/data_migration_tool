@@ -275,5 +275,19 @@ Unified Data Migration Toolkit with modular, resumable pipelines. Multi-source (
 - Scheduling via Snowflake Tasks
 - Alerting on failure (email/Slack via notification integration)
 - Data quality checks (row-level sampling)
-- SCD Type 2 support (optional silver layer)
 - Validate page in UI (source vs target counts)
+
+### [0.7.0] — AI-Powered Features (Cortex Integration)
+- **DDL Review Agent** — Post-creation AI review via `SNOWFLAKE.CORTEX.COMPLETE()` to flag type mapping issues, precision loss, CLOB truncation
+- **Config Recommender** — Analyze discovered tables and recommend SCD type, watermark column, partitions, clustering keys
+- **Failure Explainer** — Parse pipeline errors and suggest fixes using Cortex LLM
+- **Pre-run Validator** — AI-powered config check before execution (missing PKs, bad watermarks, SCD2 without keys)
+- **Clustering Key Suggestions** — Recommend micro-partition clustering based on table size and access patterns
+
+### [0.8.0] — AIM / SnowConvert Integration (Future Consideration)
+- **SnowConvert CLI (`scai`)** — Optional DDL conversion via SnowConvert for complex objects (views, procs, macros)
+- **Note:** SnowConvert handles code conversion (DDL, stored procedures, BTEQ). Our tool handles data copy. They are complementary:
+  - AIM Agent = Phase 3 (database code conversion)
+  - DMT = Phase 4 (data migration) + Phase 5 (ongoing ingestion)
+- **If SnowConvert is used first:** Our DDL step becomes a no-op (`CREATE TABLE IF NOT EXISTS` skips existing tables) and pipeline goes straight to data loading
+- **If SnowConvert is NOT available:** Our deterministic type mapping (`map_teradata_type()` / `map_mysql_type()`) creates landing tables — sufficient for flat data copy

@@ -522,7 +522,7 @@ with st.sidebar:
     _profiles = st.session_state.get("_profiles_list", [])
 
     # Source type selector
-    _source_types = sorted(set(p.get("SOURCE_TYPE", "mysql").lower() for p in _profiles)) if _profiles else ["mysql"]
+    _source_types = sorted(set(p.get("SOURCE_TYPE", "").lower() for p in _profiles if p.get("SOURCE_TYPE"))) if _profiles else []
     if "selected_source_type" not in st.session_state:
         st.session_state["selected_source_type"] = "all"
 

@@ -38,6 +38,9 @@ def detect_and_apply(cur, source_conn, config: dict, source_type: str = "mysql")
         from ddl_generators.mssql import get_mssql_columns
         source_schema = config.get("SOURCE_SCHEMA") or "dbo"
         source_cols = get_mssql_columns(source_conn, config["SOURCE_DB"], source_schema, config["SOURCE_TABLE"])
+    elif source_type == "oracle":
+        from ddl_generators.oracle import get_oracle_columns
+        source_cols = get_oracle_columns(source_conn, config["SOURCE_DB"], config["SOURCE_TABLE"])
     else:
         source_cols = get_mysql_columns(source_conn, config["SOURCE_DB"], config["SOURCE_TABLE"])
 

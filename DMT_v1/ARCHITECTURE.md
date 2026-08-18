@@ -88,6 +88,9 @@ Implements the `BaseExtractor` interface for each supported source system.
 | `mssql_full.py` | MSSQL | `bcp` (bulk copy) | Pipe-delimited CSV + gzip |
 | `mssql_incremental.py` | MSSQL | `bcp queryout` (CDC filter) | Pipe-delimited CSV + gzip |
 | `mssql_common.py` | MSSQL | — | Shared BCP arg builder + stdin-password runner |
+| `oracle_full.py` | Oracle | `oracledb` (streaming + parallel ranges) | Snappy Parquet files |
+| `oracle_incremental.py` | Oracle | `oracledb` (CDC filter) | Snappy Parquet files |
+| `oracle_common.py` | Oracle | — | Shared helpers: tuned cursor, size estimation, PK detection, Arrow conversion |
 
 **Interface contract** (defined in `extractors/__init__.py`):
 
@@ -96,7 +99,7 @@ class BaseExtractor(ABC):
     def extract_full(config, src_cfg, output_dir) -> ExtractionResult
     def extract_incremental(config, src_cfg, output_dir, source_conn) -> ExtractionResult
     @property
-    def source_type -> str  # "mysql" | "teradata" | "mssql"
+    def source_type -> str  # "mysql" | "teradata" | "mssql" | "oracle"
 ```
 
 `ExtractionResult` carries: `files`, `row_count`, `watermark_to`, `file_format`, `engine`, `skipped`, `skip_reason`.
@@ -116,6 +119,7 @@ Reads source metadata and generates Snowflake `CREATE TABLE` statements.
 | `mysql.py` | MySQL | `information_schema.columns` |
 | `teradata.py` | Teradata | `DBC.ColumnsV` |
 | `mssql.py` | MSSQL | `INFORMATION_SCHEMA.COLUMNS` (via pyodbc) |
+| `oracle.py` | Oracle | `ALL_TAB_COLUMNS` (via oracledb) |
 
 All generators:
 - Map source types to Snowflake equivalents (100+ type mappings)

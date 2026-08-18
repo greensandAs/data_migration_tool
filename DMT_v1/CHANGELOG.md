@@ -1,7 +1,61 @@
 # DMT v1 — Change Log
 
 ## Project Overview
-Unified Data Migration Toolkit with modular, resumable pipelines. Multi-source (MySQL, Teradata, MSSQL; Oracle connect-only) to Snowflake with decoupled extract/load, multi-cloud storage, and Snowflake-native configuration.
+Unified Data Migration Toolkit with modular, resumable pipelines. Multi-source (MySQL, Teradata, MSSQL, Oracle) to Snowflake with decoupled extract/load, multi-cloud storage, and Snowflake-native configuration.
+
+---
+
+## [0.9.0] — 2026-08-18
+
+### Oracle Full Extraction Support
+
+Oracle is now a fully supported extraction source — no longer connect-only.
+
+- **New `extractors/oracle_full.py`** — Full-load extractor with two strategies:
+  - Small/medium tables (< 500 MB): Single streaming fetch with `parallel(8)` hint
+  - Large tables (>= 500 MB) with numeric PK: Parallel range scans via ThreadPoolExecutor
+    (N workers, each fetching a non-overlapping ID range concurrently)
+  - Output: Snappy-compressed Parquet files
+
+- **New `extractors/oracle_incremental.py`** — Incremental (CDC) extractor:
+  - TIMESTAMP mode: `WHERE col > TO_TIMESTAMP(last, 'YYYY-MM-DD HH24:MI:SS.FF3')`
+  - ID mode: `WHERE col > last_key`
+  - Multi-column CDC: comma-separated columns produce OR conditions
+  - Streaming `fetchmany(500K)` → bounded memory regardless of result size
+
+- **New `extractors/oracle_common.py`** — Shared Oracle utilities:
+  - `tuned_cursor()`: `arraysize=10000`, `prefetchrows=10001` (100x fewer round-trips)
+  - `estimate_table_bytes()`: Size from `ALL_SEGMENTS` for strategy selection
+  - `find_numeric_pk()`: Detects suitable PK for range partitioning
+  - `build_parallel_ranges()`: Generates N non-overlapping WHERE clauses
+  - `rows_to_arrow()`: Handles Oracle-specific types (LOB, Decimal, datetime)
+
+- **New `ddl_generators/oracle.py`** — Oracle → Snowflake type mapping:
+  - ~30 Oracle types mapped (NUMBER, VARCHAR2, CLOB, BLOB, DATE, TIMESTAMP,
+    TIMESTAMP WITH TIME ZONE, RAW, INTERVAL, XMLTYPE, SDO_GEOMETRY, etc.)
+  - Reads `ALL_TAB_COLUMNS` for metadata
+  - Handles Oracle NUMBER complexity (no prec/scale → FLOAT, negative scale, etc.)
+  - Full DDL generation with audit + SCD2 columns
+
+- **Updated `metadata/source_specs.py`**:
+  - `extractor_ready: True` for Oracle
+  - Output format registry: `"oracle": ("parquet", "parquet")`
+  - Engine registry: `"oracle": ("oracledb", "oracledb")`
+
+- **Updated `core/orchestrator.py`**: Oracle routing in DDL step, extract step,
+  and `_refetch_columns()`
+
+- **Updated `core/schema_drift.py`**: Oracle branch for additive column detection
+
+### Performance vs Legacy Oracle Code
+
+| Metric | Legacy (`cx_Oracle` + `fetchall`) | DMT_v1 Oracle |
+|--------|-----------------------------------|-----------------------|
+| Network round-trips/10M rows | ~100,000 | ~1,000 |
+| Memory usage | Unbounded (entire table) | Fixed ~500 MB per batch |
+| Output format | Uncompressed CSV | Snappy Parquet (3–5x smaller) |
+| Large table handling | OOM > 5M rows | Parallel range scans |
+| Library | cx_Oracle (deprecated) | oracledb (official, maintained) |
 
 ---
 

@@ -211,6 +211,10 @@ def _refetch_columns(source_conn, config: dict, source_type: str) -> list[tuple]
             source_conn, config["SOURCE_DB"],
             config.get("SOURCE_SCHEMA") or "dbo",
             config["SOURCE_TABLE"])
+    if source_type == "oracle":
+        from ddl_generators.oracle import get_oracle_columns
+        return get_oracle_columns(
+            source_conn, config["SOURCE_DB"], config["SOURCE_TABLE"])
     from ddl_generators.mysql import get_mysql_columns
     return get_mysql_columns(
         source_conn, config["SOURCE_DB"], config["SOURCE_TABLE"],
@@ -402,7 +406,7 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
         raise NotImplementedError(
             f"{source_label(source_type)} connections can be configured and tested, "
             f"but no extractor is implemented yet. Supported for migration: "
-            f"mysql, teradata, mssql.")
+            f"mysql, teradata, mssql, oracle.")
 
     # MSSQL needs the database at connect time (INFORMATION_SCHEMA is per-database).
     source_conn = _source_connect(source_type, src_cfg,
@@ -510,6 +514,9 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
                 elif source_type == "mssql":
                     from ddl_generators.mssql import generate_and_apply as mssql_generate_and_apply
                     meta = mssql_generate_and_apply(sf_conn, source_conn, config)
+                elif source_type == "oracle":
+                    from ddl_generators.oracle import generate_and_apply as oracle_generate_and_apply
+                    meta = oracle_generate_and_apply(sf_conn, source_conn, config)
                 else:
                     meta = generate_and_apply(sf_conn, source_conn, config)
                 columns = meta["columns"]
@@ -546,6 +553,17 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
                     else:
                         from extractors.mssql_incremental import MSSQLIncrementalExtractor
                         extractor = MSSQLIncrementalExtractor()
+                        extraction_result = extractor.extract_incremental(
+                            config, src_cfg, export_base, source_conn=source_conn)
+                elif source_type == "oracle":
+                    if is_full:
+                        from extractors.oracle_full import OracleFullExtractor
+                        extractor = OracleFullExtractor()
+                        extraction_result = extractor.extract_full(
+                            config, src_cfg, export_base)
+                    else:
+                        from extractors.oracle_incremental import OracleIncrementalExtractor
+                        extractor = OracleIncrementalExtractor()
                         extraction_result = extractor.extract_incremental(
                             config, src_cfg, export_base, source_conn=source_conn)
                 else:

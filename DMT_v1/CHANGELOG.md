@@ -1,7 +1,53 @@
 # DMT v1 — Change Log
 
 ## Project Overview
-Unified Data Migration Toolkit with modular, resumable pipelines. Multi-source (MySQL, Teradata, MSSQL, Oracle) to Snowflake with decoupled extract/load, multi-cloud storage, and Snowflake-native configuration.
+Unified Data Migration Toolkit with modular, resumable pipelines. Multi-source (MySQL, Teradata, MSSQL, Oracle) to Snowflake with decoupled extract/load, multi-cloud storage, Snowflake-native configuration, and cloud file ingestion.
+
+---
+
+## [0.10.0] — 2026-08-18
+
+### Cloud File Ingestion Module
+
+New standalone pipeline for ingesting files already on cloud storage (S3, Azure, GCS)
+into Snowflake — no source database connection needed.
+
+- **New `core/file_ingester.py`** — Ingestion engine:
+  - Dynamic FILE FORMAT creation per job (CSV, Parquet, JSON, Avro)
+  - Schema inference via `INFER_SCHEMA()` for auto table creation
+  - Pattern-based file matching from external stages
+  - APPEND / OVERWRITE load modes
+  - Pre-load file counting for validation
+  - Per-job configurable format options (delimiter, escape, enclosed_by, etc.)
+  - Date-partitioned paths (auto-append YYYYMMDD to cloud path)
+  - Purge-after-load support
+
+- **New `metadata/file_ingest_config.py`** — CRUD layer:
+  - Separate `FILE_INGESTION_CONFIG` table (not mixed with MIGRATION_CONFIG)
+  - `FILE_INGESTION_LOG` audit table with per-run metrics
+  - `V_FILE_INGESTION_LOG` reporting view
+
+- **New `views/file_ingest.py`** — Streamlit UI page (3 tabs):
+  - **Active Jobs**: status cards, run all/single, job table
+  - **Add / Edit Job**: full config form (source, target, format, COPY options)
+  - **Run History**: metrics + log table
+
+- **New `setup_file_ingestion.sql`** — Standalone DDL (also appended to `setup.sql`)
+
+- **Updated `setup.sql`**: Added `FILE_INGESTION_CONFIG` + `FILE_INGESTION_LOG` tables + view
+
+- **Updated `app.py`**: Added "File Ingest" page to sidebar navigation
+
+### Use Cases Covered
+
+| Scenario | Configuration |
+|----------|--------------|
+| Daily CSV append from S3 | `LOAD_MODE=APPEND`, `DATE_PARTITION=TRUE` |
+| Full Parquet overwrite from Azure | `LOAD_MODE=OVERWRITE`, `FILE_TYPE=PARQUET` |
+| Auto-create table from file schema | `TABLE_EXISTS=FALSE` (uses INFER_SCHEMA) |
+| JSON event streams | `FILE_TYPE=JSON`, `SKIP_HEADER=0` |
+| Custom delimiters | `FIELD_DELIMITER=|`, `ESCAPE_CHARACTER=\\` |
+| Purge files after successful load | `PURGE_FILES=TRUE` |
 
 ---
 

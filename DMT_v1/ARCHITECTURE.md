@@ -41,6 +41,7 @@ The heart of DMT. Contains the ETL orchestration logic with **zero Streamlit dep
 | `reconciler.py` | Soft-delete reconciliation. Extracts only key columns from source, loads into a transient table, then sets `_IS_DELETED = TRUE` on RAW rows missing from source via anti-join. |
 | `schema_drift.py` | Additive schema drift detection. Compares source columns against existing Snowflake table and issues `ALTER TABLE ADD COLUMN` for new columns. Dropped columns are warned but preserved. |
 | `file_manifest.py` | Tracks extracted files in `HISTLOAD_DB.META.FILE_MANIFEST`. Enables decoupled extract/load workflows — extract and load can run at different times or from different machines. |
+| `file_ingester.py` | Cloud file ingestion engine (no source DB). Creates dynamic FILE FORMAT, infers schema via `INFER_SCHEMA()`, runs `COPY INTO` with pattern matching. Supports CSV, Parquet, JSON, Avro from external stages. |
 
 **Key design decision:** The orchestrator is invoked as a subprocess (`python core/orchestrator.py`) by the UI's job runner. This isolates pipeline execution from the Streamlit process, prevents memory leaks, and enables clean stop/kill semantics.
 
@@ -57,6 +58,7 @@ All persistent state lives in Snowflake tables under `HISTLOAD_DB.META`. These m
 | `source_specs.py` | Declarative per-source field requirements (default port, required extras, extractor readiness). Single source of truth shared by the UI form, connection builder, and test helper. | — |
 | `run_log.py` | Records each pipeline run: start/end times, status, row counts, duration, error messages. Powers the History and Monitoring views. | `RUN_LOG` |
 | `step_tracker.py` | Granular step-level progress within a run (ddl, schema_drift, extract, upload, load, merge, watermark, validate). Enables resume-from-failure. | `PIPELINE_STEP_LOG` |
+| `file_ingest_config.py` | CRUD for cloud file ingestion jobs (stage, path, pattern, format options, target). Separate from database migration config. | `FILE_INGESTION_CONFIG` + `FILE_INGESTION_LOG` |
 
 **Key design decision:** Storing config in Snowflake (not JSON files) provides Time Travel audit, multi-user access, and survival across container restarts.
 
@@ -153,6 +155,7 @@ Each module exports a `render(conn)` function called by `app.py`.
 | `dashboard.py` | Pipeline health: metric cards, per-table status, filtering, search |
 | `connections.py` | Create/edit/test/delete source connection profiles |
 | `config.py` | Table migration config CRUD with AI-assisted recommendations |
+| `file_ingest.py` | Cloud file ingestion: job config CRUD, run all/single, history |
 | `ddl.py` | Side-by-side source vs Snowflake DDL with AI validation |
 | `run.py` | Launch pipelines, live log streaming, stop controls |
 | `history.py` | Run history with filtering, pagination, AI failure analysis |
@@ -170,6 +173,7 @@ matching Snowflake FILE FORMAT **and** glob pattern, or nothing loads.
 | MySQL | `tsv_zstd` → `*.tsv.zst` | `parquet` → `*.parquet` |
 | Teradata | `csv` → `*.csv` | `parquet` → `*.parquet` |
 | MSSQL | `csv_gzip` → `*.csv.gz` | `csv_gzip` → `*.csv.gz` |
+| Oracle | `parquet` → `*.parquet` | `parquet` → `*.parquet` |
 
 > **Why this is dangerous to get wrong:** a `COPY INTO` whose `PATTERN` matches
 > no file is **not an error**. Snowflake reports success having loaded zero rows.

@@ -4,15 +4,16 @@
 Uses Microsoft's `bcp` command-line tool for fast bulk export to pipe-delimited
 CSV files, then splits large files and gzip-compresses them for efficient
 Snowflake ingestion via COPY INTO.
+
+The password is passed on stdin (never in argv) — see extractors.mssql_common.
 """
 from __future__ import annotations
 
 import gzip
-import os
-import subprocess
 from pathlib import Path
 
 from extractors import BaseExtractor, ExtractionResult
+from extractors import mssql_common
 
 
 class MSSQLFullExtractor(BaseExtractor):
@@ -38,53 +39,41 @@ class MSSQLFullExtractor(BaseExtractor):
         custom_sql = config.get("CUSTOM_SQL")
         filter_condition = config.get("FILTER_CONDITION")
 
-        server = src_cfg.get("host", "")
+        server = mssql_common.server_spec(src_cfg.get("host", ""),
+                                          src_cfg.get("port"))
         user = src_cfg.get("user", "")
         password = src_cfg.get("password", "")
 
         filename = f"{src_db}_{src_schema}_{src_table}.csv"
         filepath = out_dir / filename
 
-        # Build BCP command
+        # Choose bcp mode. "queryout" is required whenever we need a WHERE
+        # clause or a custom SELECT; "out" copies the whole table.
         if custom_sql:
-            bcp_cmd = (
-                f'bcp "{custom_sql}" queryout "{filepath}" '
-                f'-S {server} -d {src_db} -U {user} -P {password} '
-                f'-c -t "{delimiter}" -C 65001'
-            )
+            source_spec, mode, database = custom_sql, "queryout", src_db
         elif filter_condition and filter_condition.strip() != "1=1":
-            query = f"SELECT * FROM [{src_schema}].[{src_table}] WHERE {filter_condition}"
-            bcp_cmd = (
-                f'bcp "{query}" queryout "{filepath}" '
-                f'-S {server} -d {src_db} -U {user} -P {password} '
-                f'-c -t "{delimiter}" -C 65001'
-            )
+            source_spec = (f"SELECT * FROM [{src_schema}].[{src_table}] "
+                           f"WHERE {filter_condition}")
+            mode, database = "queryout", src_db
         else:
-            bcp_cmd = (
-                f'bcp "{src_db}.{src_schema}.{src_table}" out "{filepath}" '
-                f'-S {server} -U {user} -P {password} '
-                f'-c -t "{delimiter}" -C 65001'
-            )
+            source_spec = f"{src_db}.{src_schema}.{src_table}"
+            mode, database = "out", None
+
+        args = mssql_common.build_bcp_args(
+            source_spec=source_spec, mode=mode, filepath=filepath,
+            server=server, user=user, delimiter=delimiter, database=database)
 
         print(f"   BCP: {src_db}.{src_schema}.{src_table} → {filepath.name}")
-        proc = subprocess.run(
-            bcp_cmd, shell=True, capture_output=True, text=True, timeout=7200)
+        proc = mssql_common.run_bcp(args, password)
 
-        if proc.returncode not in (0, 4):
-            err = proc.stderr.strip() or proc.stdout.strip()
+        if proc.returncode not in mssql_common.BCP_OK_RETURNCODES:
+            err = mssql_common.bcp_error(proc)
             print(f"   ❌ BCP failed (rc={proc.returncode}): {err[:200]}")
             return ExtractionResult(
                 files=[], row_count=0, engine="bcp",
                 skipped=True, skip_reason=f"BCP error: {err[:500]}")
 
-        # Count rows
-        row_count = 0
-        if filepath.exists():
-            try:
-                with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-                    row_count = sum(1 for _ in f)
-            except Exception:
-                pass
+        row_count = mssql_common.count_lines(filepath)
 
         if row_count == 0:
             print("   ⚠️ BCP produced 0 rows — skipping")

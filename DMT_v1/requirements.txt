@@ -22,6 +22,9 @@ teradatasql>=20.0.0.0
 # ── MSSQL source ─────────────────────────────────────────────────────────────
 pyodbc>=4.0.35                   # Requires ODBC Driver 17+ for SQL Server
 
+# ── Oracle source (connection only — extractor not yet implemented) ──────────
+oracledb>=2.0.0                  # Thin mode: no Instant Client needed
+
 # ── Data processing ───────────────────────────────────────────────────────────
 pyarrow>=14.0.0
 pandas>=2.0.0

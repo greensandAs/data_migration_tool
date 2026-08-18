@@ -74,7 +74,7 @@ def update_profile(cur, profile_name: str, **kwargs) -> str:
     """Update fields on an existing profile. Only provided kwargs are updated."""
     import json
     allowed = {"source_type", "host", "port", "username", "password",
-               "auth_secret", "extra_params", "is_active"}
+               "auth_secret", "logmech", "extra_params", "is_active"}
     sets = []
     vals = []
     for key, val in kwargs.items():
@@ -126,6 +126,13 @@ def test_connection(profile: dict) -> tuple[bool, str]:
     port = int(profile.get("PORT") or 0)
     user = profile.get("USERNAME", "")
     password = profile.get("PASSWORD", "")
+    extra = profile.get("EXTRA_PARAMS") or {}
+    if isinstance(extra, str):
+        import json
+        try:
+            extra = json.loads(extra)
+        except ValueError:
+            extra = {}
 
     try:
         if source_type == "mysql":
@@ -133,20 +140,27 @@ def test_connection(profile: dict) -> tuple[bool, str]:
             conn = mysql.connector.connect(
                 host=host, port=port or 3306, user=user, password=password,
                 connect_timeout=10)
+            cur = conn.cursor()
+            cur.execute("SELECT VERSION()")
+            version = cur.fetchone()[0]
+            cur.close()
             conn.close()
-            return True, "MySQL connection successful"
+            return True, f"MySQL {version}"
 
         elif source_type == "teradata":
             import teradatasql
             logmech = profile.get("LOGMECH") or "TD2"
             conn = teradatasql.connect(host=host, user=user, password=password,
                                        logmech=logmech)
+            cur = conn.cursor()
+            cur.execute("SELECT DATABASE")
+            db = cur.fetchone()[0]
+            cur.close()
             conn.close()
-            return True, "Teradata connection successful"
+            return True, f"Teradata · default DB: {str(db).strip()}"
 
         elif source_type == "mssql":
             import pyodbc
-            extra = profile.get("EXTRA_PARAMS") or {}
             driver = extra.get("driver", "ODBC Driver 17 for SQL Server")
             conn_str = (
                 f"DRIVER={{{driver}}};SERVER={host},{port or 1433};"
@@ -155,8 +169,27 @@ def test_connection(profile: dict) -> tuple[bool, str]:
                 "Connection Timeout=10;"
             )
             conn = pyodbc.connect(conn_str)
+            cur = conn.cursor()
+            cur.execute("SELECT @@VERSION")
+            version = (cur.fetchone()[0] or "").split("\n")[0].strip()
+            cur.close()
             conn.close()
-            return True, "MSSQL connection successful"
+            return True, version[:120] or "MSSQL connected"
+
+        elif source_type == "oracle":
+            import oracledb
+            service = extra.get("service_name") or ""
+            if not service:
+                return False, "Service Name is required for Oracle connections."
+            dsn = f"{host}:{port or 1521}/{service}"
+            conn = oracledb.connect(user=user, password=password, dsn=dsn)
+            cur = conn.cursor()
+            cur.execute("SELECT banner FROM v$version WHERE ROWNUM = 1")
+            row = cur.fetchone()
+            banner = (row[0] if row else "") or "Oracle connected"
+            cur.close()
+            conn.close()
+            return True, str(banner)[:120]
 
         else:
             return False, f"Unknown source type: {source_type}"

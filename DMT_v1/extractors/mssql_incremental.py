@@ -8,16 +8,17 @@ CSV files for Snowflake ingestion.
 Supports two cursor modes:
   - time: WHERE cdc_col >= last_loaded_at AND cdc_col < current_ts
   - id:   WHERE pk_col > last_loaded_key (captures inserts only)
+
+The password is passed on stdin (never in argv) — see extractors.mssql_common.
 """
 from __future__ import annotations
 
 import gzip
-import os
-import subprocess
 from datetime import datetime
 from pathlib import Path
 
 from extractors import BaseExtractor, ExtractionResult
+from extractors import mssql_common
 
 
 class MSSQLIncrementalExtractor(BaseExtractor):
@@ -42,7 +43,8 @@ class MSSQLIncrementalExtractor(BaseExtractor):
         src_table = config["SOURCE_TABLE"]
         delimiter = config.get("DELIMITER") or "|"
 
-        server = src_cfg.get("host", "")
+        server = mssql_common.server_spec(src_cfg.get("host", ""),
+                                          src_cfg.get("port"))
         user = src_cfg.get("user", "")
         password = src_cfg.get("password", "")
 
@@ -67,31 +69,21 @@ class MSSQLIncrementalExtractor(BaseExtractor):
         filename = f"{src_db}_{src_schema}_{src_table}_incr_{ts}.csv"
         filepath = out_dir / filename
 
-        bcp_cmd = (
-            f'bcp "{query}" queryout "{filepath}" '
-            f'-S {server} -d {src_db} -U {user} -P {password} '
-            f'-c -t "{delimiter}" -C 65001'
-        )
+        args = mssql_common.build_bcp_args(
+            source_spec=query, mode="queryout", filepath=filepath,
+            server=server, user=user, delimiter=delimiter, database=src_db)
 
         print(f"   BCP incr: [{src_schema}].[{src_table}] WHERE {condition[:80]}...")
-        proc = subprocess.run(
-            bcp_cmd, shell=True, capture_output=True, text=True, timeout=7200)
+        proc = mssql_common.run_bcp(args, password)
 
-        if proc.returncode not in (0, 4):
-            err = proc.stderr.strip() or proc.stdout.strip()
+        if proc.returncode not in mssql_common.BCP_OK_RETURNCODES:
+            err = mssql_common.bcp_error(proc)
             print(f"   ❌ BCP failed (rc={proc.returncode}): {err[:200]}")
             return ExtractionResult(
                 files=[], row_count=0, engine="bcp",
                 skipped=True, skip_reason=f"BCP error: {err[:500]}")
 
-        # Count rows
-        row_count = 0
-        if filepath.exists():
-            try:
-                with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-                    row_count = sum(1 for _ in f)
-            except Exception:
-                pass
+        row_count = mssql_common.count_lines(filepath)
 
         if row_count == 0:
             print("   ⚠️ No new rows — skipping load")

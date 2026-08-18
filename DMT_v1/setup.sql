@@ -338,3 +338,98 @@ MERGE INTO HISTLOAD_DB.META.DMT_SETTINGS t
 USING (SELECT 'ALLOWED_SOURCES' AS K) s ON t.SETTING_KEY = s.K
 WHEN MATCHED AND NOT CONTAINS(t.SETTING_VALUE, 'oracle') THEN
     UPDATE SET SETTING_VALUE = t.SETTING_VALUE || ',oracle', UPDATED_AT = CURRENT_TIMESTAMP();
+
+-- ─── File Ingestion (cloud file → Snowflake) ─────────────────────────────────
+-- Separate config table for file-based ingestion (no source database needed).
+
+CREATE TABLE IF NOT EXISTS FILE_INGESTION_CONFIG (
+    CONFIG_ID                   VARCHAR DEFAULT UUID_STRING() NOT NULL,
+    JOB_NAME                    VARCHAR NOT NULL,
+    ACTIVE                      BOOLEAN DEFAULT TRUE,
+
+    -- Source (cloud files on an external stage)
+    CLOUD_PROVIDER              VARCHAR DEFAULT 'S3',
+    STAGE_NAME                  VARCHAR NOT NULL,
+    CLOUD_PATH                  VARCHAR DEFAULT '',
+    FILE_PATTERN                VARCHAR NOT NULL,
+    FILE_TYPE                   VARCHAR DEFAULT 'CSV',
+
+    -- Target (Snowflake)
+    TARGET_DB                   VARCHAR NOT NULL,
+    TARGET_SCHEMA               VARCHAR DEFAULT 'RAW',
+    TARGET_TABLE                VARCHAR NOT NULL,
+    WAREHOUSE                   VARCHAR,
+
+    -- Load behavior
+    LOAD_MODE                   VARCHAR DEFAULT 'APPEND',
+    TABLE_EXISTS                BOOLEAN DEFAULT TRUE,
+    MERGE_KEYS                  VARCHAR,
+
+    -- File format options
+    FIELD_DELIMITER             VARCHAR DEFAULT ',',
+    FIELD_ENCLOSED_BY           VARCHAR DEFAULT '"',
+    ESCAPE_CHARACTER            VARCHAR DEFAULT '\\',
+    SKIP_HEADER                 NUMBER  DEFAULT 1,
+    NULL_IF                     VARCHAR DEFAULT '('''')',
+    FILE_FORMAT_EXTRAS          VARCHAR,
+
+    -- COPY INTO options
+    ON_ERROR                    VARCHAR DEFAULT 'ABORT_STATEMENT',
+    MATCH_BY_COLUMN_NAME        VARCHAR,
+    COPY_EXTRAS                 VARCHAR,
+    PURGE_FILES                 BOOLEAN DEFAULT FALSE,
+
+    -- Date-partitioned paths
+    DATE_PARTITION              BOOLEAN DEFAULT FALSE,
+    DATE_FORMAT                 VARCHAR DEFAULT '%Y%m%d',
+
+    -- Tracking
+    LAST_RUN_STATUS             VARCHAR,
+    LAST_RUN_AT                 TIMESTAMP_NTZ,
+    LAST_FILE_COUNT             NUMBER,
+    LAST_ROW_COUNT              NUMBER,
+    LAST_ERROR                  VARCHAR,
+    CREATED_AT                  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+    UPDATED_AT                  TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+
+    CONSTRAINT PK_FILE_INGEST_CONFIG PRIMARY KEY (CONFIG_ID)
+);
+
+CREATE TABLE IF NOT EXISTS FILE_INGESTION_LOG (
+    LOG_ID                      VARCHAR DEFAULT UUID_STRING() NOT NULL,
+    BATCH_ID                    VARCHAR,
+    CONFIG_ID                   VARCHAR,
+    JOB_NAME                    VARCHAR,
+    STAGE_NAME                  VARCHAR,
+    CLOUD_PATH                  VARCHAR,
+    FILE_PATTERN                VARCHAR,
+    FILE_TYPE                   VARCHAR,
+    FILES_MATCHED               NUMBER,
+    TARGET_DB                   VARCHAR,
+    TARGET_SCHEMA               VARCHAR,
+    TARGET_TABLE                VARCHAR,
+    LOAD_MODE                   VARCHAR,
+    ROWS_LOADED                 NUMBER,
+    FILES_LOADED                NUMBER,
+    TABLE_CREATED               BOOLEAN DEFAULT FALSE,
+    STATUS                      VARCHAR,
+    ERROR_MESSAGE               VARCHAR,
+    FAILED_STEP                 VARCHAR,
+    DURATION_SEC                NUMBER(10,2),
+    RUN_START                   TIMESTAMP_NTZ,
+    RUN_END                     TIMESTAMP_NTZ,
+    INSERTED_AT                 TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+
+    CONSTRAINT PK_FILE_INGEST_LOG PRIMARY KEY (LOG_ID)
+);
+
+CREATE OR REPLACE VIEW V_FILE_INGESTION_LOG AS
+SELECT
+    l.BATCH_ID, l.JOB_NAME,
+    l.TARGET_DB || '.' || l.TARGET_SCHEMA || '.' || l.TARGET_TABLE AS TARGET_FQN,
+    l.FILE_TYPE, l.LOAD_MODE,
+    l.FILES_MATCHED, l.FILES_LOADED, l.ROWS_LOADED,
+    l.STATUS, l.ERROR_MESSAGE, l.DURATION_SEC,
+    l.RUN_START, l.RUN_END, l.INSERTED_AT
+FROM FILE_INGESTION_LOG l
+ORDER BY l.INSERTED_AT DESC;

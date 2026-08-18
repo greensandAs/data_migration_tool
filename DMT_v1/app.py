@@ -23,6 +23,7 @@ from views.run import render as render_run
 from views.history import render as render_history
 from views.monitoring import render as render_monitoring
 from views.ddl import render as render_ddl
+from views.file_ingest import render as render_file_ingest
 
 try:
     from dotenv import load_dotenv
@@ -451,6 +452,7 @@ PAGES = {
     "Dashboard": render_dashboard,
     "Connections": render_connections,
     "Config": render_config,
+    "File Ingest": render_file_ingest,
     "DDL": render_ddl,
     "Run": render_run,
     "History": render_history,

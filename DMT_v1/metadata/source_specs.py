@@ -112,3 +112,42 @@ def validate_extras(source_type: str, extras: dict | None) -> list[str]:
             errors.append(f"{field['label']} is required for "
                           f"{source_label(source_type)}.")
     return errors
+
+
+# ── Extraction output contract ────────────────────────────────────────────────
+# What each source's extractors actually write to disk, and which engine does it.
+# Keyed (source_type, is_full). These MUST stay in sync with the ExtractionResult
+# returned by extractors/<source>_{full,incremental}.py — the loader picks its
+# Snowflake FILE FORMAT and glob PATTERN from this, and a mismatch makes
+# COPY INTO match zero files and silently load nothing.
+_OUTPUT: dict[str, tuple[str, str]] = {
+    # source:      (full_format, incremental_format)
+    "mysql":       ("tsv_zstd", "parquet"),
+    "teradata":    ("csv",      "parquet"),
+    "mssql":       ("csv_gzip", "csv_gzip"),
+}
+
+_ENGINE: dict[str, tuple[str, str]] = {
+    # source:      (full_engine, incremental_engine)
+    "mysql":       ("mysqlsh", "connectorx"),
+    "teradata":    ("tpt",     "teradatasql"),
+    "mssql":       ("bcp",     "bcp"),
+}
+
+
+def output_format(source_type: str, is_full: bool) -> str:
+    """File format this source's extractor produces.
+
+    Needed for LOAD_ONLY runs, where the extract step never ran so there is no
+    ExtractionResult to read file_format from.
+    """
+    full_fmt, incr_fmt = _OUTPUT.get((source_type or "").lower(),
+                                     _OUTPUT["mysql"])
+    return full_fmt if is_full else incr_fmt
+
+
+def engine_name(source_type: str, is_full: bool) -> str:
+    """Engine label recorded in RUN_LOG.ENGINE."""
+    full_eng, incr_eng = _ENGINE.get((source_type or "").lower(),
+                                     _ENGINE["mysql"])
+    return full_eng if is_full else incr_eng

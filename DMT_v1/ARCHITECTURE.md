@@ -156,6 +156,108 @@ Each module exports a `render(conn)` function called by `app.py`.
 
 ---
 
+## File Formats — the load contract
+
+Each extractor writes a different physical format. The loader must pick the
+matching Snowflake FILE FORMAT **and** glob pattern, or nothing loads.
+
+| Source | Full | Incremental |
+|---|---|---|
+| MySQL | `tsv_zstd` → `*.tsv.zst` | `parquet` → `*.parquet` |
+| Teradata | `csv` → `*.csv` | `parquet` → `*.parquet` |
+| MSSQL | `csv_gzip` → `*.csv.gz` | `csv_gzip` → `*.csv.gz` |
+
+> **Why this is dangerous to get wrong:** a `COPY INTO` whose `PATTERN` matches
+> no file is **not an error**. Snowflake reports success having loaded zero rows.
+> A format/pattern mismatch is therefore silent data loss, not a visible failure.
+
+Two registries keep this honest, and they must stay in sync:
+
+| Registry | Location | Answers |
+|---|---|---|
+| `_OUTPUT` | `metadata/source_specs.py` | "what does this source *write*?" |
+| `FILE_FORMATS` | `core/loader.py` | "how do I *COPY* that?" |
+
+```python
+FILE_FORMATS["csv_gzip"] = {
+    "fmt":      BCP_PIPE_FMT,       # HISTLOAD_DB.META.BCP_PIPE_FMT
+    "pattern":  r".*\.csv\.gz",
+    "match_by": "",                 # positional — needs an explicit column list
+}
+```
+
+`resolve_format()` **raises** on an unknown format rather than falling back to a
+default. A silent fallthrough to TSV/zstd is exactly what previously caused
+Teradata and MSSQL loads to move zero rows while reporting success.
+
+Adding an extractor means adding an entry to **both** registries plus a
+`CREATE FILE FORMAT` in `setup.sql`.
+
+**How the format is chosen at load time** — `_load_file_format()`, in precedence order:
+
+1. This run's `ExtractionResult` — most accurate
+2. `FILE_MANIFEST.FILE_FORMAT` — for `LOAD_ONLY`, where extract never ran in this process
+3. `source_specs.output_format()` — last resort
+
+---
+
+## Execution Modes
+
+| Mode | Steps | Notes |
+|---|---|---|
+| `FULL` | ddl → schema_drift → extract → upload → load → merge → watermark | End to end |
+| `EXTRACT_ONLY` | ddl → schema_drift → extract (→ upload) | Registers files in `FILE_MANIFEST` |
+| `LOAD_ONLY` | load → merge → watermark | Consumes pending `FILE_MANIFEST` rows |
+
+The step list is built without reference to source type, so all three sources
+behave identically.
+
+### LOAD_ONLY reads its state from FILE_MANIFEST
+
+`LOAD_ONLY` skips `extract`, so there is no in-memory `ExtractionResult`. Both
+the file format and the "is there anything to do?" decision come from
+`FILE_MANIFEST` instead:
+
+```
+EXTRACT_ONLY run                    LOAD_ONLY run (later, maybe another host)
+────────────────                    ─────────────────────────────────────────
+extract ─┐                          get_pending_files(config_id)
+         └─► register_files()  ──►    status IN ('extracted','uploaded')
+             FILE_MANIFEST                   │
+             (path, format, part)            ├─► _load_file_format()
+                                             └─► merge → mark_loaded()
+```
+
+`mark_loaded()` retires the consumed rows, so re-running `LOAD_ONLY` will not
+merge the same files twice.
+
+---
+
+## Cross-Source Parity
+
+| Capability | MySQL | Teradata | MSSQL | Oracle |
+|---|:---:|:---:|:---:|:---:|
+| Connect & test | ✅ | ✅ | ✅ | ✅ |
+| Config collection | ✅ | ✅ | ✅ | — |
+| DDL capture | ✅ | ✅ | ✅ | ❌ |
+| Auto target creation | ✅ | ✅ | ✅ | ❌ |
+| SCD 0 / 1 / 2 | ✅ | ✅ | ✅ | ❌ |
+| FULL | ✅ | ✅ | ✅ | ❌ |
+| EXTRACT_ONLY | ✅ | ✅ | ✅ | ❌ |
+| LOAD_ONLY | ✅ | ✅ | ✅ | ❌ |
+| Incremental merge | ✅ | ✅ | ✅ | ❌ |
+| Result capture | ✅ | ✅ | ✅ | — |
+
+Oracle is deliberately **connect-only**: profiles can be created and tested, but
+`source_specs.extractor_ready("oracle")` is `False`, so `_process_table()` raises
+a clear `NotImplementedError` before doing any work rather than silently falling
+through to the MySQL extractor.
+
+`RUN_LOG.ENGINE` records the real engine per source — `mysqlsh`/`connectorx`,
+`tpt`/`teradatasql`, `bcp`/`bcp` — via `source_specs.engine_name()`.
+
+---
+
 ## Data Flow (End to End)
 
 ```
@@ -186,11 +288,18 @@ HISTLOAD_DB.META.*  (run logs, step logs, file manifest)
 
 ## Adding a New Source
 
-1. Create `ddl_generators/<source>.py` — implement `map_<source>_type()` and `generate_and_apply()`
-2. Create `extractors/<source>_full.py` and `extractors/<source>_incremental.py` — extend `BaseExtractor`
-3. Register the source in `metadata/connection_manager.py` (connection form fields)
-4. Add to `utils/shared.py` → `get_allowed_sources()` default list
-5. Wire into `core/orchestrator.py` pipeline step dispatch
+1. Add a `SOURCE_SPECS` entry in `metadata/source_specs.py` — default port, required
+   extra fields, and `extractor_ready`. Also add the source to `_OUTPUT` (what format
+   its extractors write) and `_ENGINE` (labels for `RUN_LOG.ENGINE`)
+2. Create `ddl_generators/<source>.py` — implement `map_<source>_type()` and `generate_and_apply()`
+3. Create `extractors/<source>_full.py` and `extractors/<source>_incremental.py` — extend `BaseExtractor`
+4. If it emits a new physical format, add a `FILE_FORMATS` entry in `core/loader.py`
+   **and** a `CREATE FILE FORMAT` in `setup.sql` — a missing pattern loads zero
+   rows silently
+5. Add a connect function and a `test_connection()` branch in `metadata/connection_manager.py`
+6. Add to `ALLOWED_SOURCES` in `setup.sql` and the `utils/shared.py` default
+7. Wire into `core/orchestrator.py`: `_build_src_cfg()`, `_source_connect()`,
+   `_refetch_columns()`, and the ddl/extract step dispatch
 
 ---
 

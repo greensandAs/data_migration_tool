@@ -35,6 +35,7 @@ import snowflake.connector
 
 from metadata import config_manager
 from metadata import connection_manager
+from metadata import source_specs
 from core import file_manifest
 from core import loader
 from metadata import run_log
@@ -191,6 +192,51 @@ def _oracle_connect(src_cfg: dict):
     dsn = f"{src_cfg['host']}:{src_cfg.get('port', 1521)}/{service}"
     return oracledb.connect(
         user=src_cfg["user"], password=src_cfg["password"], dsn=dsn)
+
+
+def _refetch_columns(source_conn, config: dict, source_type: str) -> list[tuple]:
+    """Re-read source columns when the ddl step was skipped (LOAD_ONLY).
+
+    Must dispatch on source_type: get_mysql_columns() calls
+    cursor(dictionary=True), a mysql-connector-only kwarg that raises TypeError
+    on a pyodbc or teradatasql cursor.
+    """
+    if source_type == "teradata":
+        from ddl_generators.teradata import get_teradata_columns
+        return get_teradata_columns(
+            source_conn, config["SOURCE_DB"], config["SOURCE_TABLE"])
+    if source_type == "mssql":
+        from ddl_generators.mssql import get_mssql_columns
+        return get_mssql_columns(
+            source_conn, config["SOURCE_DB"],
+            config.get("SOURCE_SCHEMA") or "dbo",
+            config["SOURCE_TABLE"])
+    from ddl_generators.mysql import get_mysql_columns
+    return get_mysql_columns(
+        source_conn, config["SOURCE_DB"], config["SOURCE_TABLE"],
+        blob_mode=config.get("BLOB_MODE", "binary"))
+
+
+def _load_file_format(extraction_result, pending_manifest, source_type: str,
+                      is_full: bool) -> str:
+    """Decide which file format the loader should expect.
+
+    Precedence:
+      1. The ExtractionResult from this run (most accurate).
+      2. FILE_MANIFEST rows from a prior extract — this is what makes LOAD_ONLY
+         work, since the extract step never ran in this process.
+      3. The source's declared output format, as a last resort.
+    """
+    if extraction_result is not None:
+        return extraction_result.file_format
+    if pending_manifest:
+        fmts = {m.get("FILE_FORMAT") for m in pending_manifest if m.get("FILE_FORMAT")}
+        if len(fmts) == 1:
+            return fmts.pop()
+        if len(fmts) > 1:
+            print(f"   ⚠️ manifest has mixed file formats {sorted(fmts)} — "
+                  f"falling back to the source default")
+    return source_specs.output_format(source_type, is_full)
 
 
 def _source_connect(source_type: str, src_cfg: dict, database: str | None = None):
@@ -398,10 +444,7 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
                                 config["SOURCE_DB"], config["SOURCE_TABLE"], steps)
         sf_conn.commit()
 
-    if source_type == "teradata":
-        engine = "tpt" if is_full else "teradatasql"
-    else:
-        engine = "mysqlsh" if is_full else "connectorx"
+    engine = source_specs.engine_name(source_type, is_full)
     label = "FULL" if is_full else "INCREMENTAL"
     print(f"[{label}/{engine}] {config['SOURCE_DB']}.{config['SOURCE_TABLE']} "
           f"-> {loader.raw_table(config)}")
@@ -425,6 +468,22 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
     columns = None
     current_step = None
     is_single = (len(steps) <= 3)  # LOAD_ONLY or single table = verbose
+
+    # LOAD_ONLY skips the extract step, so there is no ExtractionResult to tell
+    # the loader what was produced. Recover it from FILE_MANIFEST, which the
+    # earlier EXTRACT_ONLY run populated with each file's path and format.
+    pending_manifest = []
+    if execution_mode == "LOAD_ONLY":
+        try:
+            pending_manifest = file_manifest.get_pending_files(cur, config_id)
+        except Exception as me:
+            print(f"   ⚠️ could not read FILE_MANIFEST: {me}")
+        if pending_manifest:
+            print(f"   LOAD_ONLY: {len(pending_manifest)} pending file(s) "
+                  f"from a prior extract")
+        else:
+            print("   LOAD_ONLY: no pending files in FILE_MANIFEST — "
+                  "run EXTRACT first, or the files were already loaded")
 
     try:
         for step_name in steps:
@@ -602,9 +661,14 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
                     # Load from external stage (storage integration)
                     source_type = profile.get("SOURCE_TYPE", "mysql") if profile else "mysql"
                     ext_path = loader.ext_stage_path(config, sub, source_type)
-                    fmt = loader.TSV_ZSTD_FMT if is_full else loader.PARQUET_FMT
-                    pattern = ".*\\.zst" if is_full else ".*\\.parquet"
-                    match_by = "" if is_full else "MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE"
+                    # Format must follow what the extractor produced, not the
+                    # load mode. In LOAD_ONLY this comes from FILE_MANIFEST.
+                    load_fmt = _load_file_format(extraction_result, pending_manifest,
+                                                 source_type, is_full)
+                    _spec = loader.resolve_format(load_fmt)
+                    fmt = _spec["fmt"]
+                    pattern = _spec["pattern"]
+                    match_by = _spec["match_by"]
 
                     # List files on external stage
                     try:
@@ -627,38 +691,23 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
                         fqn = loader.raw_table(config)
                         scd_type = int(config.get("SCD_TYPE") or 1)
                         if columns is None:
-                            if source_type == "teradata":
-                                from ddl_generators.teradata import get_teradata_columns
-                                columns = get_teradata_columns(
-                                    source_conn, config["SOURCE_DB"], config["SOURCE_TABLE"])
-                            else:
-                                from ddl_generators.mysql import get_mysql_columns
-                                columns = get_mysql_columns(
-                                    source_conn, config["SOURCE_DB"], config["SOURCE_TABLE"],
-                                    blob_mode=config.get("BLOB_MODE", "binary"))
-                        col_list = ", ".join(f'"{name}"' for name, _ in columns)
+                            columns = _refetch_columns(source_conn, config,
+                                                       source_type)
 
                         if scd_type == 2:
                             # SCD2: route full load through merge (preserves history)
                             rec["rows_loaded"] = loader.copy_into_merge(
                                 cur, config, batch_id,
-                                file_format=extraction_result.file_format if extraction_result else "parquet",
+                                file_format=load_fmt,
                                 stage_override=ext_path)
                         else:
-                            # SCD0/SCD1: TRUNCATE + COPY (replace all)
-                            cur.execute(f"TRUNCATE TABLE IF EXISTS {fqn}")
-                            cur.execute(
-                                f"COPY INTO {fqn} ({col_list})\n"
-                                f"FROM '{ext_path}/'\n"
-                                f"FILE_FORMAT = (FORMAT_NAME = {fmt})\n"
-                                f"PATTERN = '{pattern}'\n"
-                                f"ON_ERROR = ABORT_STATEMENT"
-                            )
-                            result = cur.fetchall()
-                            rec["rows_loaded"] = sum(int(r[3]) for r in result if len(r) > 3) if result else 0
-                            cur.execute(
-                                f'UPDATE {fqn} SET "_BATCH_ID" = %s, "_LOAD_TS" = CURRENT_TIMESTAMP() '
-                                f'WHERE "_BATCH_ID" IS NULL', (batch_id,))
+                            # SCD0/SCD1: TRUNCATE + COPY (replace all).
+                            # purge=False — files are moved to processed/ below.
+                            rec["rows_loaded"] = loader.copy_into_full(
+                                cur, config, columns, batch_id,
+                                file_format=load_fmt,
+                                stage_override=ext_path,
+                                purge=False)
                         print(f"   loaded: {rec['rows_loaded']:,} rows from {storage_type}")
                     # For incremental, merge step handles it (below)
 
@@ -708,24 +757,22 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
                     if is_full:
                         scd_type = int(config.get("SCD_TYPE") or 1)
                         if columns is None:
-                            if source_type == "teradata":
-                                from ddl_generators.teradata import get_teradata_columns
-                                columns = get_teradata_columns(
-                                    source_conn, config["SOURCE_DB"], config["SOURCE_TABLE"])
-                            else:
-                                from ddl_generators.mysql import get_mysql_columns
-                                columns = get_mysql_columns(
-                                    source_conn, config["SOURCE_DB"], config["SOURCE_TABLE"],
-                                    blob_mode=config.get("BLOB_MODE", "binary"))
+                            columns = _refetch_columns(source_conn, config,
+                                                       source_type)
+                        # Follow the extractor's actual output format; in
+                        # LOAD_ONLY this comes from FILE_MANIFEST.
+                        load_fmt = _load_file_format(extraction_result,
+                                                     pending_manifest,
+                                                     source_type, is_full)
                         if scd_type == 2:
                             # SCD2: route full load through merge (preserves history)
                             rec["rows_loaded"] = loader.copy_into_merge(
-                                cur, config, batch_id,
-                                file_format=extraction_result.file_format if extraction_result else "parquet")
+                                cur, config, batch_id, file_format=load_fmt)
                         else:
                             # SCD0/SCD1: TRUNCATE + COPY (replace all)
                             rec["rows_loaded"] = loader.copy_into_full(
-                                cur, config, columns, batch_id)
+                                cur, config, columns, batch_id,
+                                file_format=load_fmt)
                         rec["rows_extracted"] = rec["rows_loaded"]
 
                 step_tracker.mark_success(cur, run_id, step_name,
@@ -750,7 +797,13 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
                         print(f"   cleanup WARNING: {ce}")
 
             elif step_name == "merge":
-                if not is_full and extraction_result and not extraction_result.skipped:
+                # Data to merge comes either from this run's extract, or — in
+                # LOAD_ONLY — from files a prior extract left in FILE_MANIFEST.
+                fresh_extract = (extraction_result is not None
+                                 and not extraction_result.skipped)
+                has_data = fresh_extract or bool(pending_manifest)
+
+                if not is_full and has_data:
                     # For S3/Azure, pass external stage path to merge
                     merge_stage = None
                     storage_type = config.get("STORAGE_TYPE", "internal_stage")
@@ -759,36 +812,53 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
                         merge_stage = loader.ext_stage_path(config, "incremental", source_type)
                     rec["rows_loaded"] = loader.copy_into_merge(
                         cur, config, batch_id,
-                        file_format=extraction_result.file_format,
+                        file_format=_load_file_format(extraction_result,
+                                                      pending_manifest,
+                                                      source_type, is_full),
                         stage_override=merge_stage)
                     print(f"   merged: {rec['rows_loaded']:,} rows")
 
-                    # Archive: move S3/Azure files to processed/ after successful merge
-                    if storage_type in ("s3", "azure") and rec["rows_loaded"] > 0:
-                        try:
-                            from storage.s3 import S3Storage
-                            raw_path = config.get("STORAGE_PATH") or ""
-                            cur.execute(f"SHOW STAGES LIKE '{raw_path}' IN HISTLOAD_DB.META")
-                            stage_info = cur.fetchone()
-                            if stage_info:
-                                stage_cols = [d[0] for d in cur.description]
-                                stage_dict = dict(zip(stage_cols, stage_info))
-                                bucket_url = stage_dict.get("url", "")
-                                bucket_name = bucket_url.replace("s3://", "").strip("/").split("/")[0]
-                            else:
-                                bucket_name = _resolve_bucket(storage_type, config, cur)
+                    # Retire the manifest rows we just consumed so a repeat
+                    # LOAD_ONLY does not re-merge the same files.
+                    if pending_manifest and rec["rows_loaded"] > 0:
+                        for m in pending_manifest:
+                            try:
+                                file_manifest.mark_loaded(cur, m["MANIFEST_ID"])
+                            except Exception:
+                                pass
+                elif not is_full:
+                    print("   merge: nothing to merge (no extract this run and "
+                          "no pending files)")
+                    step_tracker.mark_skipped(cur, run_id, step_name,
+                                              "no new data")
+                    continue
 
-                            s3 = S3Storage(bucket=bucket_name)
-                            source_type_str = profile.get("SOURCE_TYPE", "mysql") if profile else "mysql"
-                            conn_name_str = config.get("CONNECTION_PROFILE", "default")
-                            prefix = f"dmt/{source_type_str}/{conn_name_str}/{config['SOURCE_DB']}/{config['SOURCE_TABLE']}/incremental"
-                            file_keys = s3.list_files(prefix)
-                            if file_keys:
-                                date_str = datetime.now().strftime("%Y%m%d")
-                                moved = s3.move_to_processed(file_keys, "incremental", date_str)
-                                print(f"   archive: moved {len(moved)} file(s) to processed/incremental/{date_str}/")
-                        except Exception as archive_err:
-                            print(f"   archive WARNING: {archive_err}")
+                # Archive: move S3/Azure files to processed/ after successful merge
+                if not is_full and storage_type in ("s3", "azure") and rec["rows_loaded"] > 0:
+                    try:
+                        from storage.s3 import S3Storage
+                        raw_path = config.get("STORAGE_PATH") or ""
+                        cur.execute(f"SHOW STAGES LIKE '{raw_path}' IN HISTLOAD_DB.META")
+                        stage_info = cur.fetchone()
+                        if stage_info:
+                            stage_cols = [d[0] for d in cur.description]
+                            stage_dict = dict(zip(stage_cols, stage_info))
+                            bucket_url = stage_dict.get("url", "")
+                            bucket_name = bucket_url.replace("s3://", "").strip("/").split("/")[0]
+                        else:
+                            bucket_name = _resolve_bucket(storage_type, config, cur)
+
+                        s3 = S3Storage(bucket=bucket_name)
+                        source_type_str = profile.get("SOURCE_TYPE", "mysql") if profile else "mysql"
+                        conn_name_str = config.get("CONNECTION_PROFILE", "default")
+                        prefix = f"dmt/{source_type_str}/{conn_name_str}/{config['SOURCE_DB']}/{config['SOURCE_TABLE']}/incremental"
+                        file_keys = s3.list_files(prefix)
+                        if file_keys:
+                            date_str = datetime.now().strftime("%Y%m%d")
+                            moved = s3.move_to_processed(file_keys, "incremental", date_str)
+                            print(f"   archive: moved {len(moved)} file(s) to processed/incremental/{date_str}/")
+                    except Exception as archive_err:
+                        print(f"   archive WARNING: {archive_err}")
 
                 step_tracker.mark_success(cur, run_id, step_name,
                                           {"rows": rec["rows_loaded"]})

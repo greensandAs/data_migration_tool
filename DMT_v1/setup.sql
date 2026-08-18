@@ -33,21 +33,33 @@ CREATE TABLE IF NOT EXISTS DMT_SETTINGS (
 -- Default: allow all implemented sources. Remove entries to restrict.
 -- Example: SET SETTING_VALUE = 'mysql' to only allow MySQL migrations.
 INSERT INTO DMT_SETTINGS (SETTING_KEY, SETTING_VALUE, DESCRIPTION)
-SELECT 'ALLOWED_SOURCES', 'mysql,teradata,mssql', 'Comma-separated list of enabled source types. Options: mysql, teradata, mssql, postgres, oracle'
+SELECT 'ALLOWED_SOURCES', 'mysql,teradata,mssql,oracle', 'Comma-separated list of enabled source types. Options: mysql, teradata, mssql, oracle, postgres'
 WHERE NOT EXISTS (SELECT 1 FROM DMT_SETTINGS WHERE SETTING_KEY = 'ALLOWED_SOURCES');
 
 -- ─── Connection profiles (multi-source registry) ─────────────────────────────
--- Passwords are NOT stored here — use Snowflake SECRETs or environment variables.
+-- POC auth scope: username + password only. Advanced mechanisms (Kerberos,
+-- LDAP, JWT, Oracle wallet, Azure managed identity) are not yet supported.
+--
+-- Required input fields by SOURCE_TYPE:
+--   mysql     : HOST, PORT (3306), USERNAME, PASSWORD
+--   mssql     : HOST, PORT (1433), USERNAME, PASSWORD
+--               + EXTRA_PARAMS:{"driver": "ODBC Driver 18 for SQL Server"}
+--   teradata  : HOST, USERNAME, PASSWORD   (PORT unused; LOGMECH fixed to TD2)
+--   oracle    : HOST, PORT (1521), USERNAME, PASSWORD
+--               + EXTRA_PARAMS:{"service_name": "FREEPDB1"}
+--
+-- NOTE: PASSWORD is stored in plaintext. Prefer AUTH_SECRET (an environment
+-- variable name) for anything beyond a POC.
 CREATE TABLE IF NOT EXISTS CONNECTION_PROFILES (
     PROFILE_NAME    VARCHAR        NOT NULL,
-    SOURCE_TYPE     VARCHAR        NOT NULL,       -- mysql | teradata | mssql | postgres | oracle
+    SOURCE_TYPE     VARCHAR        NOT NULL,       -- mysql | teradata | mssql | oracle | postgres
     HOST            VARCHAR,
     PORT            NUMBER,
     USERNAME        VARCHAR,
     PASSWORD        VARCHAR,                        -- stored password (alternative to SECRET)
     AUTH_SECRET     VARCHAR,                        -- Snowflake SECRET name (optional)
     LOGMECH         VARCHAR        DEFAULT 'TD2',  -- Teradata only: TD2 | LDAP
-    EXTRA_PARAMS    VARIANT,                        -- JSON: charset, ssl, tpt_path, etc.
+    EXTRA_PARAMS    VARIANT,                        -- JSON: driver (mssql), service_name (oracle), ssl, etc.
     IS_ACTIVE       BOOLEAN        DEFAULT TRUE,
     CREATED_AT      TIMESTAMP_NTZ  DEFAULT CURRENT_TIMESTAMP(),
     UPDATED_AT      TIMESTAMP_NTZ  DEFAULT CURRENT_TIMESTAMP(),
@@ -320,3 +332,9 @@ MERGE INTO HISTLOAD_DB.META.DMT_SETTINGS t
 USING (SELECT 'ALLOWED_SOURCES' AS K) s ON t.SETTING_KEY = s.K
 WHEN MATCHED AND NOT CONTAINS(t.SETTING_VALUE, 'mssql') THEN
     UPDATE SET SETTING_VALUE = t.SETTING_VALUE || ',mssql', UPDATED_AT = CURRENT_TIMESTAMP();
+
+-- Update ALLOWED_SOURCES to include oracle for existing installations.
+MERGE INTO HISTLOAD_DB.META.DMT_SETTINGS t
+USING (SELECT 'ALLOWED_SOURCES' AS K) s ON t.SETTING_KEY = s.K
+WHEN MATCHED AND NOT CONTAINS(t.SETTING_VALUE, 'oracle') THEN
+    UPDATE SET SETTING_VALUE = t.SETTING_VALUE || ',oracle', UPDATED_AT = CURRENT_TIMESTAMP();

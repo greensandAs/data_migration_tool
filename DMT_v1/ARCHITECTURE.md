@@ -53,7 +53,8 @@ All persistent state lives in Snowflake tables under `HISTLOAD_DB.META`. These m
 | Module | Responsibility | Backing Table |
 |--------|---------------|---------------|
 | `config_manager.py` | CRUD for table migration configs (source/target mapping, load type, watermark settings, merge keys, partitioning). | `MIGRATION_CONFIG` |
-| `connection_manager.py` | CRUD for source database connection profiles (host, port, credentials, source type). Supports encrypted password storage via `AUTH_SECRET` env vars. | `CONNECTION_PROFILES` |
+| `connection_manager.py` | CRUD for source database connection profiles + `test_connection()` for all source types. | `CONNECTION_PROFILES` |
+| `source_specs.py` | Declarative per-source field requirements (default port, required extras, extractor readiness). Single source of truth shared by the UI form, connection builder, and test helper. | — |
 | `run_log.py` | Records each pipeline run: start/end times, status, row counts, duration, error messages. Powers the History and Monitoring views. | `RUN_LOG` |
 | `step_tracker.py` | Granular step-level progress within a run (ddl, schema_drift, extract, upload, load, merge, watermark, validate). Enables resume-from-failure. | `PIPELINE_STEP_LOG` |
 
@@ -86,6 +87,7 @@ Implements the `BaseExtractor` interface for each supported source system.
 | `teradata_incremental.py` | Teradata | `teradatasql` (Arrow) | Snappy Parquet files |
 | `mssql_full.py` | MSSQL | `bcp` (bulk copy) | Pipe-delimited CSV + gzip |
 | `mssql_incremental.py` | MSSQL | `bcp queryout` (CDC filter) | Pipe-delimited CSV + gzip |
+| `mssql_common.py` | MSSQL | — | Shared BCP arg builder + stdin-password runner |
 
 **Interface contract** (defined in `extractors/__init__.py`):
 
@@ -207,6 +209,113 @@ Created by `setup.sql`:
 | `PARQUET_FMT` / `TSV_ZSTD_FMT` / `CSV_FMT` / `BCP_PIPE_FMT` | File format objects |
 | `DMT_STAGE` | Internal named stage for file PUT |
 | `DMT_EXT_S3` / `DMT_EXT_AZURE` | External stage definitions |
+
+---
+
+## Authentication & Connection Profiles
+
+**POC scope: username + password only.** Advanced mechanisms (Kerberos, LDAP, JWT, Oracle wallet, Azure managed identity, Windows integrated auth) are deliberately out of scope.
+
+### Required input fields by source type
+
+| Field | MySQL | MSSQL | Teradata | Oracle |
+|---|:---:|:---:|:---:|:---:|
+| Profile Name | ✅ | ✅ | ✅ | ✅ |
+| Host | ✅ | ✅ | ✅ | ✅ |
+| Port | ✅ `3306` | ✅ `1433` | ➖ unused | ✅ `1521` |
+| Username | ✅ | ✅ | ✅ | ✅ |
+| Password | ✅ | ✅ | ✅ | ✅ |
+| ODBC Driver | — | ✅ **required** | — | — |
+| Service Name | — | — | — | ✅ **required** |
+
+Source-specific fields are stored in the `EXTRA_PARAMS` VARIANT column, so adding a source needs no schema migration:
+
+```json
+{"driver": "ODBC Driver 18 for SQL Server"}     // mssql
+{"service_name": "FREEPDB1"}                    // oracle
+```
+
+### Why those two extras are mandatory
+
+- **ODBC Driver (MSSQL)** — cannot be defaulted safely. Driver 18 defaults `Encrypt=yes`; driver 17 defaults `Encrypt=no`, so a profile that works on one host silently fails on another. Must be explicit.
+- **Service Name (Oracle)** — the DSN is `host:port/service_name`. There is no portable default (`ORCL` / `XEPDB1` / `FREEPDB1` all vary), so a connect string cannot be built without it.
+
+### Field definitions live in one place
+
+`metadata/source_specs.py` declares default port, whether the port is used, required extra fields, and whether an extractor exists. The connection form, `_build_src_cfg()`, and `test_connection()` all read from it, so they cannot drift apart.
+
+```python
+SOURCE_SPECS["oracle"] = {
+    "default_port": 1521,
+    "uses_port": True,
+    "extractor_ready": False,        # connect/test works; no extractor yet
+    "extra_fields": [{"key": "service_name", "required": True, ...}],
+}
+```
+
+### Connection string shapes
+
+| Source | Connector | Target form |
+|---|---|---|
+| MySQL | `mysql.connector` | `host` + `port` |
+| MSSQL | `pyodbc` | `DRIVER={...};SERVER=host,port;DATABASE=db;UID=;PWD=` |
+| Teradata | `teradatasql` | `host` only (port resolved internally), `logmech=TD2` |
+| Oracle | `oracledb` (thin) | Easy Connect DSN: `host:port/service_name` |
+
+### MSSQL requires the database at connect time
+
+Unlike MySQL, **MSSQL's `INFORMATION_SCHEMA` is scoped per-database**, not server-wide. A connection without `DATABASE=` lands in the login's default database, so metadata lookups for any other database silently return zero columns.
+
+`_source_connect()` therefore takes a `database` argument, passed from the table's `SOURCE_DB`:
+
+```python
+source_conn = _source_connect(source_type, src_cfg, database=config["SOURCE_DB"])
+```
+
+This is why "database" is a **per-table** value (`MIGRATION_CONFIG.SOURCE_DB`) and not a connection-profile field.
+
+### Credential resolution order
+
+1. `CONNECTION_PROFILES.PASSWORD` column (plaintext)
+2. Environment variable named by `CONNECTION_PROFILES.AUTH_SECRET`
+3. Source-specific env var fallback (`MYSQL_PASSWORD`, `MSSQL_PASSWORD`, `TD_PASSWORD`, `ORACLE_PASSWORD`)
+
+> **Security note:** passwords are currently stored in plaintext in `CONNECTION_PROFILES`. Anyone with `SELECT` on that table can read every source credential. Acceptable for a POC; use `AUTH_SECRET` (env var indirection) or a secret manager for anything beyond that.
+
+### Credential handling in external extract tools
+
+Each extract tool takes credentials differently, and the naive form of each leaks. Current handling:
+
+| Tool | Naive form | Why it leaks | What DMT does |
+|---|---|---|---|
+| `mysqlsh` | `--password=x` | argv → `ps aux` | `--passwords-from-stdin` |
+| `bcp` | `-P x` | argv → `ps aux` | flag omitted; bcp prompts, password written to **stdin** |
+| `tbuild` (TPT) | password inside the job script | script file left on disk | script written **0600**, deleted in a `finally:` block |
+
+Two distinct hazards, two distinct fixes:
+
+1. **argv exposure** — `ps` reads a process's argument vector straight from the kernel, so any credential in `argv` is readable by every user on the host. `shell=False` does **not** help. The only fix is to keep it out of `argv`.
+2. **shell interpolation** — building a command string and running it under `shell=True` lets a password containing `$`, `` ` ``, `"`, `;` or `|` be reinterpreted. All extract subprocesses use argument lists with `shell=False`, so no value is ever shell-parsed.
+
+`extractors/mssql_common.py` centralises this for MSSQL:
+
+```python
+args = build_bcp_args(...)          # deliberately contains no -P
+proc = run_bcp(args, password)      # password delivered on stdin
+```
+
+`server_spec()` also appends `,port` only when it is safe — a host carrying a named instance (`HOST\SQLEXPRESS`) or an explicit port is passed through untouched.
+
+### Sources that connect but cannot migrate
+
+`source_specs.extractor_ready` gates this. Oracle profiles can be created and tested, but `_process_table()` raises a clear `NotImplementedError` before doing any work:
+
+| Source | Connect & Test | DDL Gen | Extract | Migrate |
+|---|:---:|:---:|:---:|:---:|
+| MySQL | ✅ | ✅ | ✅ | ✅ |
+| Teradata | ✅ | ✅ | ✅ | ✅ |
+| MSSQL | ✅ | ✅ | ✅ | ✅ |
+| Oracle | ✅ | ❌ | ❌ | ❌ |
 
 ---
 

@@ -15,6 +15,35 @@ from pathlib import Path
 from extractors import BaseExtractor, ExtractionResult
 
 
+def _write_private(path: Path, content: str):
+    """Write a file readable only by its owner (0600).
+
+    O_CREAT's mode applies only when the file is newly created, so an explicit
+    chmod follows to cover the pre-existing-file case. chmod is best-effort:
+    it has limited meaning on Windows, where tbuild may also run.
+    """
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        handle = os.fdopen(fd, "w", encoding="utf-8")
+    except Exception:
+        os.close(fd)
+        raise
+    with handle:
+        handle.write(content)
+    try:
+        os.chmod(str(path), 0o600)
+    except OSError:
+        pass
+
+
+def _shred(path: Path):
+    """Delete a credential-bearing file, best-effort and never raising."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as e:
+        print(f"   ⚠️ could not remove {path.name} (contains credentials): {e}")
+
+
 class TeradataFullExtractor(BaseExtractor):
 
     @property
@@ -91,18 +120,23 @@ class TeradataFullExtractor(BaseExtractor):
             instance_count=instance_count,
         )
 
-        # Write TPT script to temp file
+        # Write TPT script to a private file. It embeds the Teradata password,
+        # so it must not be world-readable and must not outlive the job.
         tpt_script_path = out_dir / f"{job_name}.tpt"
-        tpt_script_path.write_text(tpt_script, encoding="utf-8")
-        print(f"   TPT script: {tpt_script_path}")
+        _write_private(tpt_script_path, tpt_script)
+        print(f"   TPT script: {tpt_script_path} (0600)")
 
-        # Execute tbuild
+        # Execute tbuild — the script is removed even if the job fails.
         job_checkpoint = export_filename.replace(".csv", "")
         cmd = ["tbuild", "-f", str(tpt_script_path), "-j", job_checkpoint,
                "-e", "UTF-8", "-C"]
         print(f"   running: {' '.join(cmd)}")
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+        finally:
+            _shred(tpt_script_path)
+
         if result.returncode != 0:
             raise RuntimeError(
                 f"TPT export failed (rc={result.returncode}):\n{result.stderr or result.stdout}")
@@ -148,6 +182,12 @@ class TeradataFullExtractor(BaseExtractor):
             for i, col in enumerate(col_names)
         )
 
+        # TPT string literals escape a single quote by doubling it. Without
+        # this, a credential containing an apostrophe produces a broken script.
+        td_host_esc = (td_host or "").replace("'", "''")
+        td_user_esc = (td_user or "").replace("'", "''")
+        td_password_esc = (td_password or "").replace("'", "''")
+
         return f"""USING CHARACTER SET UTF8
 DEFINE JOB {job_name}
 DESCRIPTION 'DMT Full Export'
@@ -182,9 +222,9 @@ DESCRIPTION 'DMT Full Export'
         VARCHAR PrivateLogName = '{job_name}_log',
         INTEGER MaxSessions = 16,
         INTEGER MinSessions = 1,
-        VARCHAR TdpId = '{td_host}',
-        VARCHAR UserName = '{td_user}',
-        VARCHAR UserPassword = '{td_password}',
+        VARCHAR TdpId = '{td_host_esc}',
+        VARCHAR UserName = '{td_user_esc}',
+        VARCHAR UserPassword = '{td_password_esc}',
         VARCHAR SelectStmt = '{select_stmt}'
     );
 

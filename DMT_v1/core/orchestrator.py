@@ -126,6 +126,15 @@ def _build_src_cfg(profile: dict) -> dict:
             "driver": (profile.get("EXTRA_PARAMS") or {}).get("driver")
                       or os.getenv("MSSQL_DRIVER", "ODBC Driver 17 for SQL Server"),
         }
+    if source_type == "oracle":
+        return {
+            "host": profile.get("HOST") or os.getenv("ORACLE_HOST", ""),
+            "port": int(profile.get("PORT") or os.getenv("ORACLE_PORT", "1521")),
+            "user": profile.get("USERNAME") or os.getenv("ORACLE_USER", ""),
+            "password": profile.get("PASSWORD") or os.getenv("ORACLE_PASSWORD", ""),
+            "service_name": (profile.get("EXTRA_PARAMS") or {}).get("service_name")
+                            or os.getenv("ORACLE_SERVICE_NAME", ""),
+        }
     # Default: MySQL
     out = {
         "host": profile.get("HOST") or os.getenv("MYSQL_HOST", "localhost"),
@@ -151,25 +160,50 @@ def _teradata_connect(src_cfg: dict):
         logmech=src_cfg.get("logmech", "TD2"))
 
 
-def _mssql_connect(src_cfg: dict):
+def _mssql_connect(src_cfg: dict, database: str | None = None):
+    """Connect to MSSQL. `database` is required for INFORMATION_SCHEMA lookups.
+
+    Unlike MySQL, MSSQL's INFORMATION_SCHEMA is scoped per-database, so the
+    connection must target the source database or metadata queries return
+    nothing.
+    """
     import pyodbc
     driver = src_cfg.get("driver", "ODBC Driver 17 for SQL Server")
     server = src_cfg["host"]
     port = src_cfg.get("port", 1433)
+    db_part = f"DATABASE={database};" if database else ""
     conn_str = (
-        f"DRIVER={{{driver}}};SERVER={server},{port};"
+        f"DRIVER={{{driver}}};SERVER={server},{port};{db_part}"
         f"UID={src_cfg['user']};PWD={src_cfg['password']};"
         "Encrypt=yes;TrustServerCertificate=yes;"
     )
     return pyodbc.connect(conn_str)
 
 
-def _source_connect(source_type: str, src_cfg: dict):
-    """Connect to source database based on source type."""
+def _oracle_connect(src_cfg: dict):
+    """Connect to Oracle via Easy Connect (host:port/service_name)."""
+    import oracledb
+    service = src_cfg.get("service_name") or ""
+    if not service:
+        raise ValueError(
+            "Oracle connection requires a service_name "
+            "(set EXTRA_PARAMS.service_name on the connection profile).")
+    dsn = f"{src_cfg['host']}:{src_cfg.get('port', 1521)}/{service}"
+    return oracledb.connect(
+        user=src_cfg["user"], password=src_cfg["password"], dsn=dsn)
+
+
+def _source_connect(source_type: str, src_cfg: dict, database: str | None = None):
+    """Connect to source database based on source type.
+
+    `database` is only used by MSSQL, where INFORMATION_SCHEMA is per-database.
+    """
     if source_type == "teradata":
         return _teradata_connect(src_cfg)
     if source_type == "mssql":
-        return _mssql_connect(src_cfg)
+        return _mssql_connect(src_cfg, database=database)
+    if source_type == "oracle":
+        return _oracle_connect(src_cfg)
     return _mysql_connect(src_cfg)
 
 
@@ -313,7 +347,20 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
     profile = get_profile(config["CONNECTION_PROFILE"])
     src_cfg = _build_src_cfg(profile)
     source_type = (profile.get("SOURCE_TYPE") or "mysql").lower()
-    source_conn = _source_connect(source_type, src_cfg)
+
+    # Fail fast for source types that can be configured but have no extractor yet.
+    from metadata.source_specs import extractor_ready, source_label
+    if not extractor_ready(source_type):
+        cur.close()
+        sf_conn.close()
+        raise NotImplementedError(
+            f"{source_label(source_type)} connections can be configured and tested, "
+            f"but no extractor is implemented yet. Supported for migration: "
+            f"mysql, teradata, mssql.")
+
+    # MSSQL needs the database at connect time (INFORMATION_SCHEMA is per-database).
+    source_conn = _source_connect(source_type, src_cfg,
+                                  database=config["SOURCE_DB"])
 
     run_id = uuid.uuid4().hex[:16]
     config_id = config["CONFIG_ID"]

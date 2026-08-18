@@ -183,6 +183,6 @@ def get_allowed_sources(cur) -> list[str]:
 
     If the setting is missing or empty, defaults to all implemented sources.
     """
-    raw = get_setting(cur, "ALLOWED_SOURCES", "mysql,teradata,mssql")
+    raw = get_setting(cur, "ALLOWED_SOURCES", "mysql,teradata,mssql,oracle")
     return [s.strip().lower() for s in raw.split(",") if s.strip()]
 

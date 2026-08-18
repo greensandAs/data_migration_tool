@@ -59,7 +59,7 @@ SOURCE_SPECS: dict[str, dict] = {
         "label": "Oracle",
         "default_port": 1521,
         "uses_port": True,
-        "extractor_ready": False,   # connection works; extractor not built yet
+        "extractor_ready": True,
         "extra_fields": [
             {
                 "key": "service_name",
@@ -125,6 +125,7 @@ _OUTPUT: dict[str, tuple[str, str]] = {
     "mysql":       ("tsv_zstd", "parquet"),
     "teradata":    ("csv",      "parquet"),
     "mssql":       ("csv_gzip", "csv_gzip"),
+    "oracle":      ("parquet",  "parquet"),
 }
 
 _ENGINE: dict[str, tuple[str, str]] = {
@@ -132,6 +133,7 @@ _ENGINE: dict[str, tuple[str, str]] = {
     "mysql":       ("mysqlsh", "connectorx"),
     "teradata":    ("tpt",     "teradatasql"),
     "mssql":       ("bcp",     "bcp"),
+    "oracle":      ("oracledb", "oracledb"),
 }
 
 

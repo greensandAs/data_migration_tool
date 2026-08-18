@@ -88,16 +88,20 @@ def _insert(cur, entry: dict) -> str:
 
     cur.execute(
         f"""INSERT INTO {_TABLE}
-            (CONNECTION_PROFILE, SOURCE_DB, SOURCE_TABLE, TARGET_DB, TARGET_TABLE,
+            (CONNECTION_PROFILE, SOURCE_DB, SOURCE_SCHEMA, SOURCE_TABLE,
+             TARGET_DB, TARGET_TABLE,
              LOAD_TYPE, WATERMARK_COL, WATERMARK_TYPE, PRIMARY_KEY, MERGE_KEYS,
              PARTITION_COL, PARTITION_NUM, ROWS_PER_FILE,
              STORAGE_TYPE, STORAGE_PATH, STORAGE_CREDENTIALS,
-             EXECUTION_MODE, RECONCILE, ACTIVE, NOTES)
-        SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, {merge_keys_sql}, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+             EXECUTION_MODE, SCD_TYPE, FILTER_CONDITION,
+             DELIMITER, TRIM, BLOB_MODE, CUSTOM_SQL,
+             RECONCILE, ACTIVE, NOTES)
+        SELECT %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, {merge_keys_sql}, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         """,
         (
             entry.get("CONNECTION_PROFILE"),
             entry.get("SOURCE_DB"),
+            entry.get("SOURCE_SCHEMA"),
             entry.get("SOURCE_TABLE"),
             entry.get("TARGET_DB"),
             entry.get("TARGET_TABLE"),
@@ -112,6 +116,12 @@ def _insert(cur, entry: dict) -> str:
             entry.get("STORAGE_PATH"),
             entry.get("STORAGE_CREDENTIALS"),
             entry.get("EXECUTION_MODE", "FULL"),
+            entry.get("SCD_TYPE", 1),
+            entry.get("FILTER_CONDITION"),
+            entry.get("DELIMITER", ","),
+            entry.get("TRIM", False),
+            entry.get("BLOB_MODE", "binary"),
+            entry.get("CUSTOM_SQL"),
             entry.get("RECONCILE", False),
             entry.get("ACTIVE", False),
             entry.get("NOTES"),
@@ -132,16 +142,18 @@ def _update(cur, config_id: str, entry: dict) -> str:
     sets = []
     vals = []
     updatable = [
+        "SOURCE_SCHEMA",
         "TARGET_DB", "TARGET_TABLE", "TARGET_SCHEMA", "LOAD_TYPE", "WATERMARK_COL", "WATERMARK_TYPE",
         "PRIMARY_KEY", "MERGE_KEYS", "PARTITION_COL", "PARTITION_NUM", "ROWS_PER_FILE",
         "STORAGE_TYPE", "STORAGE_PATH", "STORAGE_CREDENTIALS", "EXECUTION_MODE",
         "RECONCILE", "ACTIVE", "NOTES", "SCD_TYPE", "FILTER_CONDITION",
+        "DELIMITER", "TRIM", "BLOB_MODE", "CUSTOM_SQL",
     ]
     merge_keys_sql = None
     # Fields that can be explicitly cleared (set to NULL)
     nullable_fields = {"FILTER_CONDITION", "STORAGE_PATH", "STORAGE_CREDENTIALS",
                        "WATERMARK_COL", "WATERMARK_TYPE", "PRIMARY_KEY", "NOTES",
-                       "TARGET_SCHEMA"}
+                       "TARGET_SCHEMA", "SOURCE_SCHEMA", "CUSTOM_SQL"}
     for col in updatable:
         if col in entry:
             val = entry[col]

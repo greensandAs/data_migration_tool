@@ -1,7 +1,158 @@
 # DMT v1 — Change Log
 
 ## Project Overview
-Unified Data Migration Toolkit with modular, resumable pipelines. Multi-source (MySQL, Teradata) to Snowflake with decoupled extract/load, multi-cloud storage, and Snowflake-native configuration.
+Unified Data Migration Toolkit with modular, resumable pipelines. Multi-source (MySQL, Teradata, MSSQL; Oracle connect-only) to Snowflake with decoupled extract/load, multi-cloud storage, and Snowflake-native configuration.
+
+---
+
+## [0.8.0] — 2026-08-17
+
+### Cross-Source Parity Fixes (critical — silent data loss)
+
+An audit of MySQL / Teradata / MSSQL against config collection, execution modes,
+DDL capture, auto target creation, SCD strategy, and result capture found that
+only MySQL had a working end-to-end path. Root cause: **file format was inferred
+from load mode instead of carried from `ExtractionResult.file_format`.**
+
+A `COPY INTO` whose `PATTERN` matches no file is not an error — it reports
+success having loaded zero rows. Every mismatch below was therefore silent.
+
+- **New file format registry** in `core/loader.py`
+  - `FILE_FORMATS` maps `file_format` → FILE FORMAT object + glob pattern + `match_by`
+  - `resolve_format()` **raises** on unknown formats instead of defaulting to TSV
+  - Added the missing `BCP_PIPE_FMT` constant (the object existed in `setup.sql`
+    but was never referenced by any code — a dead object)
+- **`copy_into_full()` no longer hardcodes TSV/zstd**
+  - Now takes `file_format` and `purge`; previously `PATTERN='.*\.tsv\.zst'` was
+    fixed, so Teradata (`*.csv`) and MSSQL (`*.csv.gz`) full loads matched nothing
+  - Warns explicitly when 0 rows load due to a pattern miss
+- **`copy_into_merge()`** if/elif chain replaced with a registry lookup —
+  `csv_gzip` had no branch, so MSSQL incremental fell through to TSV and merged nothing
+- **External stage (S3/Azure) path** no longer uses
+  `TSV_ZSTD if is_full else PARQUET`; the duplicated inline `COPY INTO` was
+  deleted in favour of `copy_into_full(..., purge=False)`. That duplication is
+  why the external path drifted out of sync with the internal one
+- **New `metadata/source_specs.py` output contract**
+  - `output_format(source_type, is_full)` — what each extractor actually writes
+  - `engine_name(source_type, is_full)` — MSSQL runs were being logged in
+    `RUN_LOG.ENGINE` as `mysqlsh`/`connectorx`
+- **`_refetch_columns()`** replaces two copy-pasted blocks that routed everything
+  except Teradata to `get_mysql_columns()`. That calls
+  `cursor(dictionary=True)`, a mysql-connector-only kwarg, so `LOAD_ONLY` raised
+  `TypeError` on a pyodbc cursor. Now dispatches MySQL / Teradata / MSSQL and
+  passes `SOURCE_SCHEMA`
+
+### LOAD_ONLY + Incremental — was a no-op for every source
+
+`LOAD_ONLY` runs `["load","merge","watermark"]`, but the `load` step only acted
+when `is_full` and the `merge` step was guarded on an in-memory
+`ExtractionResult` that is `None` when extract never ran. Nothing loaded, nothing
+merged, and the run reported success.
+
+- Pending files and their format are now recovered from `FILE_MANIFEST` via the
+  already-existing (but never called) `get_pending_files()`
+- New `_load_file_format()` precedence: this run's `ExtractionResult` →
+  `FILE_MANIFEST.FILE_FORMAT` → source default
+- Merge guard widened to `fresh_extract or pending_manifest`; consumed manifest
+  rows are retired with `mark_loaded()` so a repeat `LOAD_ONLY` will not
+  re-merge the same files
+- Clear skip message when there is genuinely nothing pending
+
+### Config Persistence Gaps
+
+- `SOURCE_SCHEMA` added to `_insert`/`_update` and to the Add Table dialog
+  (shown only for MSSQL, defaults to `dbo`). The column existed and the
+  extractors read it, but nothing ever wrote it — every MSSQL table silently
+  defaulted to `dbo`, making tables in other schemas unreachable
+- `SCD_TYPE` and `FILTER_CONDITION` added to `_insert` — previously updatable
+  but silently dropped on create
+- `DELIMITER`, `TRIM`, `BLOB_MODE`, `CUSTOM_SQL` now persisted on both insert
+  and update — a non-default BCP/TPT delimiter did not survive a save
+
+---
+
+## [0.7.0] — 2026-08-17
+
+### MSSQL (SQL Server) Support
+- New `ddl_generators/mssql.py` — MSSQL→Snowflake type mapping from
+  `INFORMATION_SCHEMA.COLUMNS` via pyodbc (40+ types incl. `money`,
+  `datetimeoffset`, `uniqueidentifier`, `xml`, `rowversion`)
+- New `extractors/mssql_full.py` — BCP bulk export, 512 MB row-boundary split + gzip
+- New `extractors/mssql_incremental.py` — BCP `queryout` with CDC condition
+  (timestamp or ID cursor, multi-column CDC supported)
+- New `extractors/mssql_common.py` — shared BCP arg builder and runner
+- `SOURCE_SCHEMA` column on `MIGRATION_CONFIG` (MSSQL uses 3-part names);
+  unique constraint extended to include it
+- `BCP_PIPE_FMT` file format (pipe-delimited, gzip, UTF-8)
+- Schema drift detection extended to MSSQL
+
+### Credential Handling in External Extract Tools
+Two distinct hazards, two distinct fixes:
+- **argv exposure** — `ps` reads the argument vector from the kernel, so
+  `-P secret` is readable by every user on the host. `shell=False` does not help
+- **shell interpolation** — a password containing `$`, `` ` ``, `"`, `;` or `|`
+  gets reinterpreted when a command string runs under `shell=True`
+
+- `bcp` password now supplied on **stdin** (flag omitted; bcp prompts), with
+  `shell=False` and an argument list. Mirrors how `mysqlsh` already used
+  `--passwords-from-stdin`
+- TPT job script (which embeds `UserPassword`) is written **0600** and deleted
+  in a `finally:` block — it was world-readable and left in the export
+  directory indefinitely
+- Teradata host/user/password are now quote-escaped for TPT string literals
+- `server_spec()` appends `,port` for bcp only when safe — a host carrying a
+  named instance (`HOST\SQLEXPRESS`) or explicit port is passed through untouched
+
+### Authentication & Connection Profiles
+- New `metadata/source_specs.py` — declarative per-source field requirements
+  (default port, whether port is used, required extras, extractor readiness).
+  The connection form, `_build_src_cfg()` and `test_connection()` all read from
+  it so they cannot drift apart
+- Oracle **connect-only** support: `_oracle_connect()` via Easy Connect DSN,
+  profile fields, and `test_connection()`. `extractor_ready=False` makes
+  `_process_table()` fail fast with a clear message instead of silently falling
+  through to the MySQL extractor
+- **MSSQL `DATABASE=` fix** — MSSQL's `INFORMATION_SCHEMA` is scoped
+  per-database, so a connection without `DATABASE=` lands in the login's default
+  database and metadata lookups return zero columns.
+  `_source_connect()` now takes `database`, passed from the table's `SOURCE_DB`
+- `test_connection()` covers all four sources and returns the real server
+  banner rather than a generic success string
+- `logmech` added to `update_profile()`'s allowed fields
+
+### Connections Page
+- Source Type selector moved **outside** `st.form` so the field set can react to it
+- Conditional fields: ODBC Driver (MSSQL), Service Name (Oracle)
+- Port defaults per source; hidden entirely for Teradata
+- Removed the always-visible LOGMECH dropdown (POC is password-only; TD2 fixed)
+- Per-profile **edit form**; blank password means "unchanged"
+- **Test before saving** — `🧪 Test Credentials` in the create form and
+  `🧪 Test These Values` in the edit form, both `form_submit_button`s.
+  `clear_on_submit` had to become `False`, since every submit button would
+  otherwise wipe the form on a test
+- Existing button renamed `🧪 Test Saved Profile` — next to a dirty edit form it
+  was silently testing the old stored credentials
+
+### UI
+- Sidebar made static (non-scrolling)
+- Two-level source filter: Source Type → Source Connection (filtered by type)
+- AI Assist toggle and model selector moved from sidebar to the sticky header
+- Sidebar profile cache invalidated on profile create/edit/activate/delete
+
+---
+
+## [0.6.5] — 2026-08-17
+
+### Package Restructure
+Flat root reorganised into single-responsibility packages:
+- `core/` — pipeline engine, no Streamlit dependency (`orchestrator`, `loader`,
+  `validator`, `reconciler`, `schema_drift`, `file_manifest`)
+- `metadata/` — Snowflake state (`config_manager`, `connection_manager`,
+  `run_log`, `step_tracker`, later `source_specs`)
+- `utils/` — cross-cutting (`shared`, `ui_theme`)
+- Import paths updated project-wide; `views/run.py` invokes
+  `core/orchestrator.py` as a subprocess
+- New `ARCHITECTURE.md` for onboarding
 
 ---
 

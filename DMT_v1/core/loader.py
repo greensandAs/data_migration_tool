@@ -18,6 +18,59 @@ from ddl_generators import RAW_SCHEMA, AUDIT_COLS, target_db
 PARQUET_FMT = "HISTLOAD_DB.META.PARQUET_FMT"
 TSV_ZSTD_FMT = "HISTLOAD_DB.META.TSV_ZSTD_FMT"
 CSV_FMT = "HISTLOAD_DB.META.CSV_FMT"
+BCP_PIPE_FMT = "HISTLOAD_DB.META.BCP_PIPE_FMT"
+
+# ── File format registry ─────────────────────────────────────────────────────
+# Single source of truth mapping an ExtractionResult.file_format to the
+# Snowflake FILE FORMAT object, the glob PATTERN that matches those files, and
+# whether columns can be matched by name.
+#
+# Why this matters: COPY INTO with a PATTERN that matches nothing is NOT an
+# error — it reports success having loaded zero rows. Getting the pattern wrong
+# therefore causes silent data loss, so every format an extractor can emit must
+# have an entry here.
+FILE_FORMATS: dict[str, dict] = {
+    "tsv_zstd": {
+        "fmt": TSV_ZSTD_FMT,
+        "pattern": r".*\.tsv\.zst",
+        "match_by": "",
+    },
+    "parquet": {
+        "fmt": PARQUET_FMT,
+        "pattern": r".*\.parquet",
+        "match_by": "MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE",
+    },
+    "csv": {
+        "fmt": CSV_FMT,
+        "pattern": r".*\.csv.*",
+        "match_by": "",
+    },
+    "csv_gzip": {
+        "fmt": BCP_PIPE_FMT,
+        "pattern": r".*\.csv\.gz",
+        "match_by": "",
+    },
+}
+
+DEFAULT_FILE_FORMAT = "tsv_zstd"
+
+
+def resolve_format(file_format: str | None) -> dict:
+    """Look up a format spec. Raises on unknown rather than silently mismatching.
+
+    An unrecognised format previously fell through to TSV/zstd, whose pattern
+    matches no CSV or gzip file — producing a successful COPY INTO that loaded
+    nothing. Failing loudly here is strictly safer.
+    """
+    key = (file_format or DEFAULT_FILE_FORMAT).lower()
+    if key not in FILE_FORMATS:
+        raise ValueError(
+            f"Unknown file_format {file_format!r}. Known formats: "
+            f"{sorted(FILE_FORMATS)}. Add an entry to loader.FILE_FORMATS "
+            f"(and metadata.source_specs._OUTPUT) when adding an extractor.")
+    return FILE_FORMATS[key]
+
+
 STAGE = "HISTLOAD_DB.META.DMT_STAGE"
 EXT_S3_STAGE = "HISTLOAD_DB.META.DMT_EXT_S3"
 EXT_AZURE_STAGE = "HISTLOAD_DB.META.DMT_EXT_AZURE"
@@ -124,37 +177,57 @@ def put_files_parallel(sf_cfg: dict, files: list[Path], config: dict, sub: str,
 
 
 def copy_into_full(cur, config: dict, columns: list[tuple],
-                   batch_id: str) -> int:
-    """Full load: TRUNCATE + COPY INTO from TSV files (mysqlsh format).
+                   batch_id: str, file_format: str = DEFAULT_FILE_FORMAT,
+                   stage_override: str | None = None,
+                   purge: bool = True) -> int:
+    """Full load: TRUNCATE + COPY INTO.
 
-    TSV files have only business columns (no audit columns), so we must
-    specify the column list explicitly to avoid count mismatch.
+    The file format is driven by what the extractor actually produced
+    (ExtractionResult.file_format) — mysqlsh writes tsv.zst, TPT writes csv,
+    BCP writes csv.gz. Hardcoding one of them silently loads zero rows for the
+    other two.
+
+    Extract files carry only business columns (no audit columns), so for
+    positional formats we specify the column list explicitly to avoid a count
+    mismatch. Parquet is matched by name instead.
+
     Returns rows loaded.
     """
     fqn = raw_table(config)
-    sp = stage_path(config, "full")
-
-    # Build column list (business columns only, matching TSV column order)
-    col_list = ", ".join(f'"{name}"' for name, _ in columns)
+    sp = stage_override or stage_path(config, "full")
+    spec = resolve_format(file_format)
 
     cur.execute(f"TRUNCATE TABLE IF EXISTS {fqn}")
+
+    if spec["match_by"]:
+        # Column names come from the file itself — no explicit list.
+        target = fqn
+        match_by = spec["match_by"]
+    else:
+        col_list = ", ".join(f'"{name}"' for name, _ in columns)
+        target = f"{fqn} ({col_list})"
+        match_by = ""
+
     cur.execute(
-        f"COPY INTO {fqn} ({col_list})\n"
+        f"COPY INTO {target}\n"
         f"FROM '{sp}/'\n"
-        f"FILE_FORMAT = (FORMAT_NAME = {TSV_ZSTD_FMT})\n"
-        f"PATTERN = '.*\\.tsv\\.zst'\n"
+        f"FILE_FORMAT = (FORMAT_NAME = {spec['fmt']})\n"
+        f"PATTERN = '{spec['pattern']}'\n"
+        f"{match_by}\n"
         f"ON_ERROR = ABORT_STATEMENT\n"
-        f"PURGE = TRUE"
+        f"{'PURGE = TRUE' if purge else ''}"
     )
     # COPY INTO returns: (file, status, rows_parsed, rows_loaded, ...)
-    # Row count is in column index 3 (rows_loaded) or we sum all rows
     result = cur.fetchall()
     rows = sum(int(r[3]) for r in result) if result else 0
     # Update audit columns for the batch
     cur.execute(
         f'UPDATE {fqn} SET "_BATCH_ID" = %s, "_LOAD_TS" = CURRENT_TIMESTAMP() '
         f'WHERE "_BATCH_ID" IS NULL', (batch_id,))
-    print(f"   COPY full: {rows} rows into {fqn}")
+    print(f"   COPY full [{file_format}]: {rows} rows into {fqn}")
+    if rows == 0:
+        print(f"   ⚠️ 0 rows loaded — no files matched "
+              f"PATTERN '{spec['pattern']}' at {sp}/")
     return rows
 
 
@@ -178,18 +251,10 @@ def copy_into_merge(cur, config: dict, batch_id: str,
     keys = merge_keys(config)
     scd_type = int(config.get("SCD_TYPE") or 1)
 
-    if file_format == "parquet":
-        fmt = PARQUET_FMT
-        pattern = ".*\\.parquet"
-        match_by = "MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE"
-    elif file_format == "csv":
-        fmt = CSV_FMT
-        pattern = ".*\\.csv.*"
-        match_by = ""
-    else:
-        fmt = TSV_ZSTD_FMT
-        pattern = ".*\\.tsv\\.zst"
-        match_by = ""
+    spec = resolve_format(file_format)
+    fmt = spec["fmt"]
+    pattern = spec["pattern"]
+    match_by = spec["match_by"]
 
     # Create transient staging table
     stg_table = f"{fqn}__STG"

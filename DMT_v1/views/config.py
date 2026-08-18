@@ -255,8 +255,10 @@ def _ai_recommend(source_db: str, source_table: str, profile: dict):
     return {"json": None, "raw": raw}
 
 
-def _render_add_table_dialog(cur, conn, profile_name: str, default_schema: str | None):
+def _render_add_table_dialog(cur, conn, profile_name: str, default_schema: str | None,
+                             source_type: str = "mysql"):
     """Render the Add Table form as a dialog (modal) like the original app."""
+    source_type = (source_type or "mysql").lower()
 
     @st.dialog("➕ Add Table Manually")
     def _dialog():
@@ -265,6 +267,16 @@ def _render_add_table_dialog(cur, conn, profile_name: str, default_schema: str |
         source_db = c1.text_input("Source schema (MySQL db)",
                                   value=default_schema or "", key="dlg_add_db")
         source_table = c2.text_input("Source table", key="dlg_add_tbl")
+        # MSSQL uses 3-part names (database.schema.table), so the schema is a
+        # separate field. MySQL has no schema layer and Teradata maps schema to
+        # database, so it stays NULL for them.
+        if source_type == "mssql":
+            source_schema = st.text_input(
+                "Source schema (MSSQL)", value="dbo", key="dlg_add_srcschema",
+                help="MSSQL schema that owns the table — dbo, Sales, "
+                     "HumanResources, etc.")
+        else:
+            source_schema = None
         target_table = st.text_input("Target table (Snowflake)",
                                      help="Defaults to UPPER(source table) if blank",
                                      key="dlg_add_tgt")
@@ -345,6 +357,7 @@ def _render_add_table_dialog(cur, conn, profile_name: str, default_schema: str |
                 config_manager.upsert(_save_cur, {
                     "CONNECTION_PROFILE": profile_name,
                     "SOURCE_DB": source_db.strip(),
+                    "SOURCE_SCHEMA": (source_schema or "").strip() or None,
                     "SOURCE_TABLE": source_table.strip(),
                     "TARGET_DB": source_db.strip().upper(),
                     "TARGET_TABLE": tgt,
@@ -456,7 +469,8 @@ def render(conn):
         st.session_state["_show_add_dialog"] = False
 
     if st.session_state.get("_show_add_dialog"):
-        _render_add_table_dialog(cur, conn, sel_profile_name, sel_schema)
+        _render_add_table_dialog(cur, conn, sel_profile_name, sel_schema,
+                                 source_type=sel_profile.get("SOURCE_TYPE", "mysql"))
 
     if discover_clicked and sel_schema:
         with st.spinner(f"Scanning `{sel_schema}`..."):

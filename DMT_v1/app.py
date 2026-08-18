@@ -485,6 +485,7 @@ with st.sidebar:
     NAV_ICONS = {
         "Dashboard": "📊",
         "Config": "⚙️",
+        "File Ingest": "📁",
         "DDL": "🏗️",
         "Run": "▶️",
         "History": "📜",

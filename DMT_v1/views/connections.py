@@ -42,6 +42,44 @@ def _as_dict(value) -> dict:
     return {}
 
 
+def _connection_errors(source_type: str, host: str, username: str,
+                       password: str, extras: dict) -> list[str]:
+    """Validate only the fields needed to OPEN a connection.
+
+    Deliberately excludes profile name — a credential probe does not need one.
+    """
+    errors = []
+    if not (host or "").strip():
+        errors.append("Host is required.")
+    if not (username or "").strip():
+        errors.append("Username is required.")
+    if not password:
+        errors.append("Password is required.")
+    errors += source_specs.validate_extras(source_type, extras)
+    return errors
+
+
+def _probe_profile(source_type: str, host: str, port, username: str,
+                   password: str, extras: dict) -> dict:
+    """Build an unsaved, profile-shaped dict for connection_manager.test_connection."""
+    return {
+        "SOURCE_TYPE": source_type,
+        "HOST": (host or "").strip(),
+        "PORT": int(port) if port else source_specs.default_port(source_type),
+        "USERNAME": (username or "").strip(),
+        "PASSWORD": password,
+        "LOGMECH": "TD2" if source_type == "teradata" else None,
+        "EXTRA_PARAMS": extras or {},
+    }
+
+
+def _show_test_result(ok: bool, msg: str):
+    if ok:
+        st.success(f"✅ Connected — {msg}")
+    else:
+        st.error(f"❌ {msg}")
+
+
 def _render_extra_fields(source_type: str, key_prefix: str,
                          existing: dict | None = None) -> dict:
     """Render the source-specific extra inputs. Returns {key: value}."""
@@ -90,39 +128,62 @@ def render(conn):
 
     spec = source_specs.get_spec(source_type)
 
-    with st.form("create_profile", clear_on_submit=True):
+    # clear_on_submit must stay False: the Test button is also a submit, and
+    # clearing would wipe the form every time you probe credentials. Fields are
+    # cleared explicitly (via their keys) only after a successful create.
+    with st.form("create_profile", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
         with c1:
             profile_name = st.text_input(
-                "Profile Name *", placeholder=f"{source_type}_prod")
-            username = st.text_input("Username *", placeholder="etl_user")
+                "Profile Name *", placeholder=f"{source_type}_prod",
+                key="np_profile_name")
+            username = st.text_input("Username *", placeholder="etl_user",
+                                     key="np_username")
         with c2:
-            host = st.text_input("Host *", placeholder="10.0.0.1 or hostname")
+            host = st.text_input("Host *", placeholder="10.0.0.1 or hostname",
+                                 key="np_host")
             if source_specs.uses_port(source_type):
                 port = st.number_input(
                     "Port *", value=source_specs.default_port(source_type),
-                    min_value=1, max_value=65535)
+                    min_value=1, max_value=65535, key="np_port")
             else:
                 port = source_specs.default_port(source_type)
                 st.caption(f"Port not used — {spec.get('port_note', '')}")
         with c3:
             password = st.text_input("Password *", type="password",
-                                     placeholder="Source DB password")
+                                     placeholder="Source DB password",
+                                     key="np_password")
             extras = _render_extra_fields(source_type, "new")
 
-        submitted = st.form_submit_button("➕ Create Profile", type="primary",
+        b1, b2 = st.columns([1, 1])
+        tested = b1.form_submit_button("🧪 Test Credentials",
+                                      use_container_width=True)
+        submitted = b2.form_submit_button("➕ Create Profile", type="primary",
                                           use_container_width=True)
+
+        # ── Test without saving ───────────────────────────────────────────────
+        if tested:
+            errors = _connection_errors(source_type, host, username,
+                                        password, extras)
+            if errors:
+                for err in errors:
+                    st.error(err)
+            else:
+                probe = _probe_profile(source_type, host, port, username,
+                                       password, extras)
+                with st.spinner("Connecting…"):
+                    ok, msg = connection_manager.test_connection(probe)
+                _show_test_result(ok, msg)
+                if ok:
+                    st.caption("Credentials valid — click **Create Profile** to save.")
+
+        # ── Create ────────────────────────────────────────────────────────────
         if submitted:
             errors = []
             if not profile_name.strip():
                 errors.append("Profile name is required.")
-            if not host.strip():
-                errors.append("Host is required.")
-            if not username.strip():
-                errors.append("Username is required.")
-            if not password:
-                errors.append("Password is required.")
-            errors += source_specs.validate_extras(source_type, extras)
+            errors += _connection_errors(source_type, host, username,
+                                         password, extras)
 
             if errors:
                 for err in errors:
@@ -140,6 +201,11 @@ def render(conn):
                         extra_params=extras or None,
                     )
                     st.session_state.pop("_profiles_list", None)  # refresh sidebar
+                    # Clear the form now that it succeeded (clear_on_submit=False).
+                    for k in ("np_profile_name", "np_username", "np_host",
+                              "np_port", "np_password", "new_driver",
+                              "new_service_name"):
+                        st.session_state.pop(k, None)
                     st.success(f"Profile `{profile_name}` created.")
                     st.rerun()
                 except Exception as e:
@@ -217,7 +283,37 @@ def render(conn):
                 with e3:
                     new_extras = _render_extra_fields(src, f"e_{pname}", p_extras)
 
-                if st.form_submit_button("💾 Save Changes", use_container_width=True):
+                eb1, eb2 = st.columns([1, 1])
+                edit_tested = eb1.form_submit_button("🧪 Test These Values",
+                                                     use_container_width=True)
+                edit_saved = eb2.form_submit_button("💾 Save Changes",
+                                                    type="primary",
+                                                    use_container_width=True)
+
+                # Probe the edited values without saving. A blank password
+                # means "unchanged", so fall back to the stored credential.
+                if edit_tested:
+                    probe_pwd = (new_password
+                                 or p.get("PASSWORD")
+                                 or os.getenv(p.get("AUTH_SECRET") or "", "")
+                                 or "")
+                    errors = _connection_errors(src, new_host, new_username,
+                                                probe_pwd, new_extras)
+                    if errors:
+                        for err in errors:
+                            st.error(err)
+                    else:
+                        probe = _probe_profile(src, new_host, new_port,
+                                               new_username, probe_pwd,
+                                               new_extras)
+                        with st.spinner("Connecting…"):
+                            ok, msg = connection_manager.test_connection(probe)
+                        _show_test_result(ok, msg)
+                        if ok:
+                            st.caption("These values work — click **Save Changes** "
+                                       "to persist them.")
+
+                if edit_saved:
                     errors = []
                     if not new_host.strip():
                         errors.append("Host is required.")
@@ -248,8 +344,10 @@ def render(conn):
             # ── Action buttons ────────────────────────────────────────────────
             col1, col2, col3 = st.columns(3)
             with col1:
-                if st.button("🧪 Test Connection", key=f"test_{pname}",
-                             use_container_width=True):
+                if st.button("🧪 Test Saved Profile", key=f"test_{pname}",
+                             use_container_width=True,
+                             help="Tests the credentials currently stored in "
+                                  "Snowflake, ignoring any unsaved edits above."):
                     # Password: directly from table, fallback to env var
                     pwd = p.get("PASSWORD") or os.getenv(p.get("AUTH_SECRET") or "", "") or ""
                     if not pwd:
@@ -259,10 +357,7 @@ def render(conn):
                                         "EXTRA_PARAMS": p_extras}
                         with st.spinner("Connecting…"):
                             ok, msg = connection_manager.test_connection(test_profile)
-                        if ok:
-                            st.success(f"✅ Connected — {msg}")
-                        else:
-                            st.error(f"❌ {msg}")
+                        _show_test_result(ok, msg)
 
             with col2:
                 if p.get("IS_ACTIVE", True):

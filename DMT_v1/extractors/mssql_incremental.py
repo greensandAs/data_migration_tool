@@ -114,19 +114,50 @@ class MSSQLIncrementalExtractor(BaseExtractor):
             watermark_to=watermark_to,
             file_format="csv_gzip", engine="bcp")
 
+    @staticmethod
+    def _validate_timestamp(value: str) -> None:
+        """Raise ValueError if `value` is not a parseable timestamp.
+
+        Guards against a malformed watermark silently triggering a full
+        re-extract. Accepts the common formats a Snowflake TIMESTAMP renders
+        to (space or 'T' separator, optional fractional seconds).
+        """
+        raw = str(value).strip()
+        candidate = raw.replace("T", " ")
+        # Trim trailing timezone/offset noise that DATETIME2 cannot parse.
+        formats = (
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+        )
+        for fmt in formats:
+            try:
+                datetime.strptime(candidate, fmt)
+                return
+            except ValueError:
+                continue
+        raise ValueError(
+            f"Invalid watermark timestamp {value!r} for MSSQL incremental "
+            f"extract. Expected a value like 'YYYY-MM-DD HH:MM:SS[.ffffff]'. "
+            f"Fix LAST_LOADED_AT in MIGRATION_CONFIG or reset the table to a "
+            f"full load.")
+
     def _build_cdc_condition(self, config: dict, wm_col: str, wm_type: str) -> str:
         """Build WHERE clause based on last-loaded watermark."""
         if wm_type == "time":
             last_ts = config.get("LAST_LOADED_AT")
             if not last_ts:
                 return "1=1"  # First run — full extract handled by orchestrator
-            # Support multiple CDC columns (comma-separated)
+            # Fail loudly if the stored watermark is not a valid timestamp,
+            # rather than silently re-extracting the whole table via a
+            # TRY_CAST(...) IS NULL fallback.
+            self._validate_timestamp(last_ts)
+            # Support multiple CDC columns (comma-separated).
+            # Strictly greater-than (>) so rows exactly at the last watermark
+            # are not re-fetched every run — matches MySQL/Teradata/Oracle.
             cols = [c.strip() for c in wm_col.split(",")]
-            parts = []
-            for col in cols:
-                parts.append(
-                    f"(TRY_CAST('{last_ts}' AS DATETIME2) IS NULL OR "
-                    f"[{col}] >= TRY_CAST('{last_ts}' AS DATETIME2))")
+            parts = [f"[{col}] > CAST('{last_ts}' AS DATETIME2)" for col in cols]
             return "(" + " OR ".join(parts) + ")"
 
         elif wm_type == "id":

@@ -252,7 +252,7 @@ def _load_file_format(extraction_result, pending_manifest, source_type: str,
         if len(fmts) == 1:
             return fmts.pop()
         if len(fmts) > 1:
-            print(f"   ⚠️ manifest has mixed file formats {sorted(fmts)} — "
+            print(f"   ⚠️ manifest has mixed file formats {sorted(fmts)} - "
                   f"falling back to the source default")
     return source_specs.output_format(source_type, is_full)
 
@@ -548,7 +548,7 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
             print(f"   LOAD_ONLY: {len(pending_manifest)} pending file(s) "
                   f"from a prior extract")
         else:
-            print("   LOAD_ONLY: no pending files in FILE_MANIFEST — "
+            print("   LOAD_ONLY: no pending files in FILE_MANIFEST - "
                   "run EXTRACT first, or the files were already loaded")
 
     try:
@@ -988,12 +988,12 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
                 rec["status"] = "success"
             total_sec = time.monotonic() - t0
             if storage_type == "local":
-                print(f"   done ({rec['status']}) — "
-                      f"{rec['rows_extracted']:,} extracted to local (no load) — "
+                print(f"   done ({rec['status']}) - "
+                      f"{rec['rows_extracted']:,} extracted to local (no load) - "
                       f"{total_sec:.1f}s")
-                print(f"   NOTE: storage=local — files extracted only, no upload/load performed")
+                print(f"   NOTE: storage=local - files extracted only, no upload/load performed")
             else:
-                print(f"   done ({rec['status']}) — "
+                print(f"   done ({rec['status']}) - "
                       f"{rec['rows_extracted']:,} extracted, {rec['rows_loaded']:,} loaded, "
                       f"{total_sec:.1f}s")
 

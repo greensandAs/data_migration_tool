@@ -80,7 +80,7 @@ class MSSQLFullExtractor(BaseExtractor):
         row_count = mssql_common.count_lines(filepath)
 
         if row_count == 0:
-            print("   WARNING: BCP produced 0 rows — skipping")
+            print("   WARNING: BCP produced 0 rows - skipping")
             return ExtractionResult(
                 files=[], row_count=0, engine="bcp",
                 skipped=True, skip_reason="No rows extracted")

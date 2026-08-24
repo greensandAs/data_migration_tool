@@ -86,7 +86,7 @@ class MSSQLIncrementalExtractor(BaseExtractor):
         row_count = mssql_common.count_lines(filepath)
 
         if row_count == 0:
-            print("   WARNING: No new rows — skipping load")
+            print("   WARNING: No new rows - skipping load")
             try:
                 filepath.unlink(missing_ok=True)
             except Exception:

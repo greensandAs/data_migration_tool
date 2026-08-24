@@ -75,7 +75,7 @@ class OracleFullExtractor(BaseExtractor):
                         config, src_cfg, out_dir, schema, table,
                         pk_col, partition_num)
                 else:
-                    print(f"   oracle full: no numeric PK — streaming with parallel hint "
+                    print(f"   oracle full: no numeric PK - streaming with parallel hint "
                           f"(~{table_bytes // (1024*1024)} MB)")
 
             # Single-stream extraction (small table or no numeric PK)

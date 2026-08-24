@@ -218,8 +218,8 @@ def copy_into_full(cur, config: dict, columns: list[tuple],
         "ON_ERROR = ABORT_STATEMENT"
     )
 
-    print(f"DEBUG COPY SQL [{config['SOURCE_TABLE']}]:")
-    print(repr(sql))
+    # print(f"DEBUG COPY SQL [{config['SOURCE_TABLE']}]:")
+    # print(repr(sql))
     cur.execute(sql)
     # COPY INTO returns: (file, status, rows_parsed, rows_loaded, ...)
     result = cur.fetchall()
@@ -230,7 +230,7 @@ def copy_into_full(cur, config: dict, columns: list[tuple],
         f'WHERE "_BATCH_ID" IS NULL', (batch_id,))
     print(f"   COPY full [{file_format}]: {rows} rows into {fqn}")
     if rows == 0:
-        print(f"   ⚠️ 0 rows loaded — no files matched "
+        print(f"   ⚠️ 0 rows loaded - no files matched "
               f"PATTERN '{spec['pattern']}' at {sp}/")
     return rows
 
@@ -375,7 +375,7 @@ def copy_into_merge(cur, config: dict, batch_id: str,
                 f"VALUES ({insert_vals})"
             )
 
-            print(f"DEBUG MERGE SQL:\n{merge_sql}")
+            # print(f"DEBUG MERGE SQL:\n{merge_sql}")
             cur.execute(merge_sql)
 
             rows = cur.rowcount or 0
@@ -432,7 +432,7 @@ def check_stage_before_load(cur, config: dict, sub: str, run_context: dict = Non
         if len(files) > 5:
             print(f"     ... and {len(files) - 5} more")
     else:
-        print(f"   Stage ({sub}): NO FILES — nothing to load")
+        print(f"   Stage ({sub}): NO FILES - nothing to load")
         # Write audit record if context provided
         if run_context:
             import run_log

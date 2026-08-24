@@ -76,6 +76,8 @@ def run_bcp(args: list[str], password: str,
         input=(password or "") + "\n",
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         shell=False,
     )

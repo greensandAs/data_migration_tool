@@ -35,7 +35,11 @@ class MSSQLFullExtractor(BaseExtractor):
         src_db = config["SOURCE_DB"]
         src_schema = config.get("SOURCE_SCHEMA") or "dbo"
         src_table = config["SOURCE_TABLE"]
-        delimiter = config.get("DELIMITER") or "|"
+        delimiter = str(config.get("DELIMITER") or ",")
+        if delimiter == r"\t":
+            delimiter = "\t"
+        if len(delimiter) != 1:
+            raise ValueError(f"Invalid DELIMITER: {delimiter!r}")
         custom_sql = config.get("CUSTOM_SQL")
         filter_condition = config.get("FILTER_CONDITION")
 
@@ -63,12 +67,12 @@ class MSSQLFullExtractor(BaseExtractor):
             source_spec=source_spec, mode=mode, filepath=filepath,
             server=server, user=user, delimiter=delimiter, database=database)
 
-        print(f"   BCP: {src_db}.{src_schema}.{src_table} → {filepath.name}")
+        print(f"   BCP: {src_db}.{src_schema}.{src_table} -> {filepath.name}")
         proc = mssql_common.run_bcp(args, password)
 
         if proc.returncode not in mssql_common.BCP_OK_RETURNCODES:
             err = mssql_common.bcp_error(proc)
-            print(f"   ❌ BCP failed (rc={proc.returncode}): {err[:200]}")
+            print(f"   ERROR: BCP failed (rc={proc.returncode}): {err[:200]}")
             return ExtractionResult(
                 files=[], row_count=0, engine="bcp",
                 skipped=True, skip_reason=f"BCP error: {err[:500]}")
@@ -76,7 +80,7 @@ class MSSQLFullExtractor(BaseExtractor):
         row_count = mssql_common.count_lines(filepath)
 
         if row_count == 0:
-            print("   ⚠️ BCP produced 0 rows — skipping")
+            print("   WARNING: BCP produced 0 rows — skipping")
             return ExtractionResult(
                 files=[], row_count=0, engine="bcp",
                 skipped=True, skip_reason="No rows extracted")
@@ -90,7 +94,7 @@ class MSSQLFullExtractor(BaseExtractor):
         except Exception:
             pass
 
-        print(f"   ✅ BCP: {row_count} rows → {len(gz_files)} file(s)")
+        print(f"   BCP Complete: {row_count} rows -> {len(gz_files)} file(s)")
         return ExtractionResult(
             files=gz_files, row_count=row_count,
             file_format="csv_gzip", engine="bcp")

@@ -78,7 +78,7 @@ class MSSQLIncrementalExtractor(BaseExtractor):
 
         if proc.returncode not in mssql_common.BCP_OK_RETURNCODES:
             err = mssql_common.bcp_error(proc)
-            print(f"   ❌ BCP failed (rc={proc.returncode}): {err[:200]}")
+            print(f"   ERROR: BCP failed (rc={proc.returncode}): {err[:200]}")
             return ExtractionResult(
                 files=[], row_count=0, engine="bcp",
                 skipped=True, skip_reason=f"BCP error: {err[:500]}")
@@ -86,7 +86,7 @@ class MSSQLIncrementalExtractor(BaseExtractor):
         row_count = mssql_common.count_lines(filepath)
 
         if row_count == 0:
-            print("   ⚠️ No new rows — skipping load")
+            print("   WARNING: No new rows — skipping load")
             try:
                 filepath.unlink(missing_ok=True)
             except Exception:
@@ -108,7 +108,7 @@ class MSSQLIncrementalExtractor(BaseExtractor):
         # Determine new watermark value
         watermark_to = self._get_new_watermark(config, wm_col, wm_type, source_conn)
 
-        print(f"   ✅ BCP incr: {row_count} rows → {gz_path.name}")
+        print(f"   BCP incr COMPLETED: {row_count} rows -> {gz_path.name}")
         return ExtractionResult(
             files=[gz_path], row_count=row_count,
             watermark_to=watermark_to,

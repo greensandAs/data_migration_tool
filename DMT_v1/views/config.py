@@ -79,6 +79,10 @@ def _discover_tables(profile: dict, schema: str) -> list[dict]:
 
     if source_type == "teradata":
         return _discover_tables_teradata(profile, schema, password)
+    if source_type == "mssql":
+        return _discover_tables_mssql(profile, schema, password)
+    if source_type == "oracle":
+        return _discover_tables_oracle(profile, schema, password)
     return _discover_tables_mysql(profile, schema, password)
 
 
@@ -206,6 +210,158 @@ def _discover_tables_mysql(profile: dict, schema: str, password: str) -> list[di
     return entries
 
 
+def _discover_tables_mssql(profile: dict, schema: str, password: str) -> list[dict]:
+    """Auto-discover tables from MSSQL via INFORMATION_SCHEMA."""
+    import pyodbc
+    import json
+    import streamlit as st
+
+    extras = profile.get("EXTRA_PARAMS") or {}
+    if isinstance(extras, str):
+        try:
+            extras = json.loads(extras)
+        except ValueError:
+            extras = {}
+    driver = extras.get("driver", "ODBC Driver 18 for SQL Server")
+    host = profile.get("HOST", "")
+    port = profile.get("PORT", 1433)
+    mssql_schema = st.session_state.get("_mssql_source_schema", "dbo")
+
+    conn_str = (
+        f"DRIVER={{{driver}}};SERVER={host},{port};"
+        f"DATABASE={schema};"
+        f"UID={profile.get('USERNAME', '')};PWD={password};"
+        "Encrypt=yes;TrustServerCertificate=yes;"
+    )
+    mssql_conn = pyodbc.connect(conn_str)
+    cur = mssql_conn.cursor()
+
+    cur.execute(
+        "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+        "WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' "
+        "ORDER BY TABLE_NAME", (mssql_schema,))
+    tables = [r[0] for r in cur.fetchall()]
+
+    entries = []
+    for table in tables:
+        cur.execute(
+            "SELECT c.COLUMN_NAME "
+            "FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc "
+            "JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE c "
+            "  ON tc.CONSTRAINT_NAME = c.CONSTRAINT_NAME "
+            " AND tc.TABLE_SCHEMA = c.TABLE_SCHEMA "
+            " AND tc.TABLE_NAME = c.TABLE_NAME "
+            "WHERE tc.TABLE_SCHEMA = ? AND tc.TABLE_NAME = ? "
+            "AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY' "
+            "ORDER BY c.ORDINAL_POSITION", (mssql_schema, table))
+        pk_cols = [r[0] for r in cur.fetchall()]
+
+        cur.execute(
+            "SELECT COLUMN_NAME, DATA_TYPE "
+            "FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? "
+            "ORDER BY ORDINAL_POSITION", (mssql_schema, table))
+        columns = [(r[0], r[1]) for r in cur.fetchall()]
+
+        wm = None
+        ts_types = ("datetime", "datetime2", "smalldatetime", "datetimeoffset")
+        for col_name, col_type in columns:
+            if col_type.lower() in ts_types and any(
+                    k in col_name.lower() for k in ("update", "modified", "changed", "timestamp")):
+                wm = col_name
+                break
+        if not wm:
+            for col_name, col_type in columns:
+                if col_type.lower() in ts_types and any(
+                        k in col_name.lower() for k in ("create", "date", "time")):
+                    wm = col_name
+                    break
+
+        entries.append({
+            "SOURCE_TABLE": table,
+            "SOURCE_SCHEMA": mssql_schema,
+            "PRIMARY_KEY": pk_cols[0].upper() if pk_cols else None,
+            "MERGE_KEYS": [c.upper() for c in pk_cols] if len(pk_cols) > 1 else None,
+            "WATERMARK_COL": wm.upper() if wm else None,
+            "LOAD_TYPE": "incremental" if wm else "full",
+            "PARTITION_COL": pk_cols[0].upper() if len(pk_cols) == 1 else None,
+        })
+
+    cur.close()
+    mssql_conn.close()
+    return entries
+
+
+def _discover_tables_oracle(profile: dict, schema: str, password: str) -> list[dict]:
+    """Auto-discover tables from Oracle via ALL_TAB_COLUMNS / ALL_CONSTRAINTS."""
+    import oracledb
+    import json
+
+    extras = profile.get("EXTRA_PARAMS") or {}
+    if isinstance(extras, str):
+        try:
+            extras = json.loads(extras)
+        except ValueError:
+            extras = {}
+    service_name = extras.get("service_name", "")
+    dsn = f"{profile.get('HOST', 'localhost')}:{profile.get('PORT', 1521)}/{service_name}"
+
+    ora_conn = oracledb.connect(
+        user=profile.get("USERNAME", ""), password=password, dsn=dsn)
+    cur = ora_conn.cursor()
+
+    cur.execute(
+        "SELECT table_name FROM all_tables "
+        "WHERE owner = :1 ORDER BY table_name", (schema.upper(),))
+    tables = [r[0] for r in cur.fetchall()]
+
+    entries = []
+    for table in tables:
+        cur.execute("""
+            SELECT cc.column_name
+            FROM all_constraints c
+            JOIN all_cons_columns cc
+              ON c.constraint_name = cc.constraint_name AND c.owner = cc.owner
+            WHERE c.owner = :1 AND c.table_name = :2
+              AND c.constraint_type = 'P'
+            ORDER BY cc.position
+        """, (schema.upper(), table))
+        pk_cols = [r[0] for r in cur.fetchall()]
+
+        cur.execute(
+            "SELECT column_name, data_type FROM all_tab_columns "
+            "WHERE owner = :1 AND table_name = :2 ORDER BY column_id",
+            (schema.upper(), table))
+        columns = [(r[0], r[1]) for r in cur.fetchall()]
+
+        wm = None
+        ts_types = ("DATE", "TIMESTAMP")
+        for col_name, col_type in columns:
+            if any(t in col_type for t in ts_types) and any(
+                    k in col_name.lower() for k in ("update", "modified", "changed")):
+                wm = col_name
+                break
+        if not wm:
+            for col_name, col_type in columns:
+                if any(t in col_type for t in ts_types) and any(
+                        k in col_name.lower() for k in ("create", "date", "time")):
+                    wm = col_name
+                    break
+
+        entries.append({
+            "SOURCE_TABLE": table,
+            "PRIMARY_KEY": pk_cols[0].upper() if pk_cols else None,
+            "MERGE_KEYS": [c.upper() for c in pk_cols] if len(pk_cols) > 1 else None,
+            "WATERMARK_COL": wm.upper() if wm else None,
+            "LOAD_TYPE": "incremental" if wm else "full",
+            "PARTITION_COL": pk_cols[0].upper() if len(pk_cols) == 1 else None,
+        })
+
+    cur.close()
+    ora_conn.close()
+    return entries
+
+
 def _ai_recommend(source_db: str, source_table: str, profile: dict):
     """Ask Cortex for config recommendations."""
     import mysql.connector
@@ -264,7 +420,18 @@ def _render_add_table_dialog(cur, conn, profile_name: str, default_schema: str |
     def _dialog():
         st.caption(f"Add a table to `{profile_name}` configuration")
         c1, c2 = st.columns(2)
-        source_db = c1.text_input("Source schema (MySQL db)",
+
+        # Dynamic label based on source type
+        if source_type == "mssql":
+            db_label = "Source Database (MSSQL)"
+        elif source_type == "oracle":
+            db_label = "Source Schema (Oracle owner)"
+        elif source_type == "teradata":
+            db_label = "Source Database (Teradata)"
+        else:
+            db_label = "Source Schema (MySQL)"
+
+        source_db = c1.text_input(db_label,
                                   value=default_schema or "", key="dlg_add_db")
         source_table = c2.text_input("Source table", key="dlg_add_tbl")
         # MSSQL uses 3-part names (database.schema.table), so the schema is a
@@ -398,7 +565,10 @@ def render(conn):
     # Resolve the profile dict for the selected connection
     profiles = connection_manager.list_profiles(cur)
     if not profiles:
-        st.warning("No connection profiles. Create one via **🔌 Manage Connections** in the sidebar.")
+        from utils.shared import empty_state
+        empty_state("🔌", "No Connection Profiles",
+                    "Create a source connection via <b>Manage Connections</b> "
+                    "in the sidebar to get started.")
         cur.close()
         return
 
@@ -449,6 +619,109 @@ def render(conn):
         except Exception as e:
             col_schema.error(f"Cannot connect: {e}")
             sel_schema = col_schema.text_input("Teradata Database (manual)", key="cfg_td_schema_manual")
+    elif sel_profile["SOURCE_TYPE"] == "mssql":
+        try:
+            import pyodbc
+            extras = sel_profile.get("EXTRA_PARAMS") or {}
+            if isinstance(extras, str):
+                import json
+                try:
+                    extras = json.loads(extras)
+                except ValueError:
+                    extras = {}
+            driver = extras.get("driver", "ODBC Driver 18 for SQL Server")
+            mssql_password = sel_profile.get("PASSWORD") or os.getenv(sel_profile.get("AUTH_SECRET") or "", "") or ""
+            host = sel_profile.get("HOST", "")
+            port = sel_profile.get("PORT", 1433)
+
+            # Connect to get database list
+            conn_str_base = (
+                f"DRIVER={{{driver}}};SERVER={host},{port};"
+                f"UID={sel_profile.get('USERNAME', '')};PWD={mssql_password};"
+                "Encrypt=yes;TrustServerCertificate=yes;"
+            )
+            mssql_conn = pyodbc.connect(conn_str_base)
+            mssql_cur = mssql_conn.cursor()
+
+            # Get databases
+            mssql_cur.execute(
+                "SELECT name FROM sys.databases "
+                "WHERE name NOT IN ('master','tempdb','model','msdb') "
+                "AND state_desc = 'ONLINE' ORDER BY name")
+            mssql_dbs = [r[0] for r in mssql_cur.fetchall()]
+
+            # If no user databases found, get current DB name
+            if not mssql_dbs:
+                mssql_cur.execute("SELECT DB_NAME()")
+                mssql_dbs = [mssql_cur.fetchone()[0]]
+
+            mssql_cur.close()
+            mssql_conn.close()
+
+            # Show database dropdown
+            sel_db = col_schema.selectbox(
+                "MSSQL Database", mssql_dbs, key="cfg_mssql_db")
+
+            # Connect to selected database to get schemas
+            conn_str_db = (
+                f"DRIVER={{{driver}}};SERVER={host},{port};"
+                f"DATABASE={sel_db};"
+                f"UID={sel_profile.get('USERNAME', '')};PWD={mssql_password};"
+                "Encrypt=yes;TrustServerCertificate=yes;"
+            )
+            mssql_conn3 = pyodbc.connect(conn_str_db)
+            mssql_cur3 = mssql_conn3.cursor()
+            mssql_cur3.execute(
+                "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA "
+                "WHERE SCHEMA_NAME NOT IN ('sys','INFORMATION_SCHEMA','guest') "
+                "AND SCHEMA_NAME NOT LIKE 'db[_]%' "
+                "ORDER BY SCHEMA_NAME")
+            mssql_schemas = [r[0] for r in mssql_cur3.fetchall()]
+            mssql_cur3.close()
+            mssql_conn3.close()
+
+            if not mssql_schemas:
+                mssql_schemas = ["dbo"]
+
+            # Show schema dropdown below the database dropdown
+            sel_mssql_schema = col_schema.selectbox(
+                "MSSQL Schema", mssql_schemas, key="cfg_mssql_schema")
+
+            sel_schema = sel_db
+            st.session_state["_mssql_source_schema"] = sel_mssql_schema
+        except Exception as e:
+            col_schema.error(f"Cannot connect: {e}")
+            sel_schema = col_schema.text_input("MSSQL Database (manual)", key="cfg_mssql_schema_manual")
+            st.session_state["_mssql_source_schema"] = "dbo"
+    elif sel_profile["SOURCE_TYPE"] == "oracle":
+        try:
+            import oracledb
+            ora_password = sel_profile.get("PASSWORD") or os.getenv(sel_profile.get("AUTH_SECRET") or "", "") or ""
+            extras = sel_profile.get("EXTRA_PARAMS") or {}
+            if isinstance(extras, str):
+                import json
+                try:
+                    extras = json.loads(extras)
+                except ValueError:
+                    extras = {}
+            service_name = extras.get("service_name", "")
+            dsn = f"{sel_profile.get('HOST', 'localhost')}:{sel_profile.get('PORT', 1521)}/{service_name}"
+            ora_conn = oracledb.connect(
+                user=sel_profile.get("USERNAME", ""),
+                password=ora_password, dsn=dsn)
+            ora_cur = ora_conn.cursor()
+            ora_cur.execute(
+                "SELECT username FROM all_users "
+                "WHERE oracle_maintained = 'N' "
+                "ORDER BY username")
+            ora_schemas = [r[0] for r in ora_cur.fetchall()]
+            ora_cur.close()
+            ora_conn.close()
+            sel_schema = col_schema.selectbox(
+                "Oracle Schema", ora_schemas, key="cfg_oracle_schema")
+        except Exception as e:
+            col_schema.error(f"Cannot connect: {e}")
+            sel_schema = col_schema.text_input("Oracle Schema (manual)", key="cfg_oracle_schema_manual")
     else:
         sel_schema = col_schema.text_input("Source Schema", key="cfg_other_schema")
 
@@ -463,12 +736,6 @@ def render(conn):
 
     # ── Add Table dialog (modal, like the original app) ───────────────────────
     if add_clicked:
-        st.session_state["_show_add_dialog"] = True
-    elif st.session_state.get("_editing_table"):
-        # If user clicked edit on a table, dismiss the dialog
-        st.session_state["_show_add_dialog"] = False
-
-    if st.session_state.get("_show_add_dialog"):
         _render_add_table_dialog(cur, conn, sel_profile_name, sel_schema,
                                  source_type=sel_profile.get("SOURCE_TYPE", "mysql"))
 
@@ -489,7 +756,12 @@ def render(conn):
         # Add selection column
         df.insert(0, "Import", True)
         display_cols = ["Import", "SOURCE_TABLE", "PRIMARY_KEY", "LOAD_TYPE",
-                        "WATERMARK_COL", "_review"]
+                        "WATERMARK_COL"]
+        # Show SOURCE_SCHEMA for MSSQL
+        if "SOURCE_SCHEMA" in df.columns:
+            display_cols.insert(2, "SOURCE_SCHEMA")
+        if "_review" in df.columns:
+            display_cols.append("_review")
         display_cols = [c for c in display_cols if c in df.columns]
 
         edited_df = st.data_editor(
@@ -502,6 +774,7 @@ def render(conn):
                 "_review": st.column_config.TextColumn(
                     "Notes", help="Auto-detected issues (review after import)", width="large"),
                 "SOURCE_TABLE": st.column_config.TextColumn("Table", width="medium"),
+                "SOURCE_SCHEMA": st.column_config.TextColumn("Schema", width="small"),
                 "LOAD_TYPE": st.column_config.TextColumn("Load", width="small"),
             },
             key="cfg_table_selector",
@@ -526,7 +799,7 @@ def render(conn):
         if import_clicked and selected_entries:
             imported = 0
             for entry in selected_entries:
-                config_manager.upsert(cur, {
+                save_data = {
                     "CONNECTION_PROFILE": sel_profile_name,
                     "SOURCE_DB": schema_name,
                     "SOURCE_TABLE": entry["SOURCE_TABLE"],
@@ -544,8 +817,12 @@ def render(conn):
                     "STORAGE_PATH": storage_path or None,
                     "EXECUTION_MODE": "FULL",
                     "ACTIVE": False,
-                    "NOTES": entry.get("_review"),  # Store review notes
-                })
+                    "NOTES": entry.get("_review"),
+                }
+                # Save SOURCE_SCHEMA for MSSQL (3-part naming)
+                if entry.get("SOURCE_SCHEMA"):
+                    save_data["SOURCE_SCHEMA"] = entry["SOURCE_SCHEMA"]
+                config_manager.upsert(cur, save_data)
                 imported += 1
             st.success(f"✅ Imported {imported} table(s).")
             del st.session_state["_discovered"]

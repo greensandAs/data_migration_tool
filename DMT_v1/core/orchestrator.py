@@ -271,6 +271,53 @@ def _source_connect(source_type: str, src_cfg: dict, database: str | None = None
     return _mysql_connect(src_cfg)
 
 
+# Transient connection errors worth retrying (network drops, forced closes,
+# timeouts). Matched case-insensitively against the exception's string form,
+# since each driver raises its own exception class.
+_RETRYABLE_CONN_HINTS = (
+    "forcibly closed",          # MSSQL/ODBC 10054
+    "communication link failure",
+    "connection reset",
+    "10054",
+    "08s01",                    # ODBC transient connection state
+    "timeout",
+    "timed out",
+    "connection refused",
+    "broken pipe",
+    "server has gone away",     # MySQL 2006
+    "lost connection",          # MySQL 2013
+    "network error",
+)
+
+
+def _is_retryable_conn_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(hint in msg for hint in _RETRYABLE_CONN_HINTS)
+
+
+def _source_connect_with_retry(source_type: str, src_cfg: dict,
+                               database: str | None = None,
+                               max_attempts: int = 3,
+                               base_delay: float = 2.0):
+    """Connect to the source with retry + exponential backoff.
+
+    Only transient network-level failures are retried (see
+    _RETRYABLE_CONN_HINTS); auth or configuration errors fail immediately.
+    """
+    attempt = 1
+    while True:
+        try:
+            return _source_connect(source_type, src_cfg, database=database)
+        except Exception as e:
+            if attempt >= max_attempts or not _is_retryable_conn_error(e):
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            print(f"   source connect attempt {attempt}/{max_attempts} failed "
+                  f"({str(e)[:120]}); retrying in {delay:.1f}s")
+            time.sleep(delay)
+            attempt += 1
+
+
 # ── Main run entry point ──────────────────────────────────────────────────────
 
 def run(force_full: bool = False, only_table: str | None = None,
@@ -424,8 +471,8 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
             f"mysql, teradata, mssql, oracle.")
 
     # MSSQL needs the database at connect time (INFORMATION_SCHEMA is per-database).
-    source_conn = _source_connect(source_type, src_cfg,
-                                  database=config["SOURCE_DB"])
+    source_conn = _source_connect_with_retry(source_type, src_cfg,
+                                             database=config["SOURCE_DB"])
 
     run_id = uuid.uuid4().hex[:16]
     config_id = config["CONFIG_ID"]

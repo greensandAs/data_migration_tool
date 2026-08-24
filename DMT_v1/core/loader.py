@@ -287,9 +287,13 @@ def copy_into_merge(cur, config: dict, batch_id: str,
     cur.execute(f"SELECT COLUMN_NAME FROM {fqn.split('.')[0]}.INFORMATION_SCHEMA.COLUMNS "
                 f"WHERE TABLE_SCHEMA = '{RAW_SCHEMA}' "
                 f"AND TABLE_NAME = '{config.get('TARGET_TABLE') or config['SOURCE_TABLE'].upper()}' "
-                f"AND COLUMN_NAME NOT LIKE '\\_%' ESCAPE '\\\\' "
+                f"AND SUBSTR(COLUMN_NAME, 1, 1) != '_' "
                 f"ORDER BY ORDINAL_POSITION")
     biz_cols = [r[0] for r in cur.fetchall()]
+    if not biz_cols:
+        raise RuntimeError(
+            f"No business columns found in {fqn} — cannot build MERGE. "
+            f"Verify the table exists and has non-audit columns.")
     col_list = ", ".join(f'"{c}"' for c in biz_cols)
 
     if scd_type == 0:

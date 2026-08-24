@@ -51,7 +51,13 @@ try:
     load_dotenv(_P(__file__).parent.parent / ".env")
 except ImportError:
     pass
+import sys
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    
 DEFAULT_MAX_PARALLEL = 4
 
 
@@ -110,7 +116,15 @@ def _build_sf_cfg() -> dict:
 
 def _build_src_cfg(profile: dict) -> dict:
     """Build source connection config from profile + env overrides."""
+    import json as _json
     source_type = (profile.get("SOURCE_TYPE") or "mysql").lower()
+    # EXTRA_PARAMS may come back as a JSON string from Snowflake VARIANT column
+    extras = profile.get("EXTRA_PARAMS") or {}
+    if isinstance(extras, str):
+        try:
+            extras = _json.loads(extras)
+        except (ValueError, TypeError):
+            extras = {}
     if source_type == "teradata":
         return {
             "host": profile.get("HOST") or os.getenv("TD_HOST", ""),
@@ -124,7 +138,7 @@ def _build_src_cfg(profile: dict) -> dict:
             "port": int(profile.get("PORT") or os.getenv("MSSQL_PORT", "1433")),
             "user": profile.get("USERNAME") or os.getenv("MSSQL_USER", ""),
             "password": profile.get("PASSWORD") or os.getenv("MSSQL_PASSWORD", ""),
-            "driver": (profile.get("EXTRA_PARAMS") or {}).get("driver")
+            "driver": extras.get("driver")
                       or os.getenv("MSSQL_DRIVER", "ODBC Driver 17 for SQL Server"),
         }
     if source_type == "oracle":
@@ -133,7 +147,7 @@ def _build_src_cfg(profile: dict) -> dict:
             "port": int(profile.get("PORT") or os.getenv("ORACLE_PORT", "1521")),
             "user": profile.get("USERNAME") or os.getenv("ORACLE_USER", ""),
             "password": profile.get("PASSWORD") or os.getenv("ORACLE_PASSWORD", ""),
-            "service_name": (profile.get("EXTRA_PARAMS") or {}).get("service_name")
+            "service_name": extras.get("service_name")
                             or os.getenv("ORACLE_SERVICE_NAME", ""),
         }
     # Default: MySQL
@@ -261,10 +275,11 @@ def _source_connect(source_type: str, src_cfg: dict, database: str | None = None
 
 def run(force_full: bool = False, only_table: str | None = None,
         resume: bool = False, max_parallel: int = DEFAULT_MAX_PARALLEL,
-        execution_mode: str | None = None):
+        execution_mode: str | None = None, profile: str | None = None):
     """Main pipeline execution.
     
     execution_mode: override per-table EXECUTION_MODE. One of FULL, EXTRACT_ONLY, LOAD_ONLY.
+    profile: filter tables to only those belonging to this CONNECTION_PROFILE.
     """
     sf_cfg = _build_sf_cfg()
     sf_conn = loader.get_sf_conn(sf_cfg)
@@ -272,8 +287,8 @@ def run(force_full: bool = False, only_table: str | None = None,
 
     batch_id = uuid.uuid4().hex[:12]
 
-    # Load active configs from Snowflake
-    configs = config_manager.list_active(cur)
+    # Load active configs from Snowflake (filtered by profile if specified)
+    configs = config_manager.list_active(cur, connection_profile=profile)
     if only_table:
         configs = [c for c in configs if c["SOURCE_TABLE"] == only_table]
 
@@ -974,10 +989,14 @@ if __name__ == "__main__":
     extract_only = "--extract-only" in args
     load_only = "--load-only" in args
     only_table = None
+    only_profile = None
     i = 0
     while i < len(args):
         if args[i] == "--table" and i + 1 < len(args):
             only_table = args[i + 1]
+            i += 2
+        elif args[i] == "--profile" and i + 1 < len(args):
+            only_profile = args[i + 1]
             i += 2
         else:
             i += 1
@@ -990,5 +1009,6 @@ if __name__ == "__main__":
         exec_mode = "LOAD_ONLY"
 
     failed = run(force_full=force_full, only_table=only_table,
-                 resume=resume_mode, execution_mode=exec_mode)
+                 resume=resume_mode, execution_mode=exec_mode,
+                 profile=only_profile)
     raise SystemExit(1 if failed else 0)

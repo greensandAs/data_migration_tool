@@ -51,22 +51,22 @@ def create_profile(cur, *, profile_name: str, source_type: str,
             "PASSWORD", "AUTH_SECRET"]
     vals = [profile_name, source_type.lower(), host, port, username,
             password, auth_secret]
-    placeholders = ["%s"] * len(vals)
+    selects = ["%s"] * len(vals)
 
     if logmech:
         cols.append("LOGMECH")
         vals.append(logmech)
-        placeholders.append("%s")
+        selects.append("%s")
 
     if extra_json:
         cols.append("EXTRA_PARAMS")
         vals.append(extra_json)
-        placeholders.append("PARSE_JSON(%s)")
+        selects.append("PARSE_JSON(%s)")
 
     col_str = ", ".join(cols)
-    ph_str = ", ".join(placeholders)
+    sel_str = ", ".join(selects)
     cur.execute(
-        f"INSERT INTO {_TABLE} ({col_str}) VALUES ({ph_str})", vals)
+        f"INSERT INTO {_TABLE} ({col_str}) SELECT {sel_str}", vals)
     return profile_name
 
 

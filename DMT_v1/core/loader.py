@@ -196,6 +196,7 @@ def copy_into_full(cur, config: dict, columns: list[tuple],
     fqn = raw_table(config)
     sp = stage_override or stage_path(config, "full")
     spec = resolve_format(file_format)
+    format_clause = _file_format_clause(config, file_format, spec)
 
     cur.execute(f"TRUNCATE TABLE IF EXISTS {fqn}")
 
@@ -208,15 +209,18 @@ def copy_into_full(cur, config: dict, columns: list[tuple],
         target = f"{fqn} ({col_list})"
         match_by = ""
 
-    cur.execute(
+    sql = (
         f"COPY INTO {target}\n"
         f"FROM '{sp}/'\n"
-        f"FILE_FORMAT = (FORMAT_NAME = {spec['fmt']})\n"
+        f"{format_clause}\n"
         f"PATTERN = '{spec['pattern']}'\n"
         f"{match_by}\n"
-        f"ON_ERROR = ABORT_STATEMENT\n"
-        f"{'PURGE = TRUE' if purge else ''}"
+        "ON_ERROR = ABORT_STATEMENT"
     )
+
+    print(f"DEBUG COPY SQL [{config['SOURCE_TABLE']}]:")
+    print(repr(sql))
+    cur.execute(sql)
     # COPY INTO returns: (file, status, rows_parsed, rows_loaded, ...)
     result = cur.fetchall()
     rows = sum(int(r[3]) for r in result) if result else 0
@@ -252,7 +256,8 @@ def copy_into_merge(cur, config: dict, batch_id: str,
     scd_type = int(config.get("SCD_TYPE") or 1)
 
     spec = resolve_format(file_format)
-    fmt = spec["fmt"]
+    # fmt = spec["fmt"]
+    format_clause = _file_format_clause(config, file_format, spec)
     pattern = spec["pattern"]
     match_by = spec["match_by"]
 
@@ -271,7 +276,7 @@ def copy_into_merge(cur, config: dict, batch_id: str,
     cur.execute(
         f"COPY INTO {stg_table}\n"
         f"FROM '{sp}/'\n"
-        f"FILE_FORMAT = (FORMAT_NAME = {fmt})\n"
+        f"{format_clause}\n"
         f"PATTERN = '{pattern}'\n"
         f"{match_by}\n"
         f"ON_ERROR = ABORT_STATEMENT\n"
@@ -309,10 +314,10 @@ def copy_into_merge(cur, config: dict, batch_id: str,
         # Step 1: Close matched records (expire current version)
         cur.execute(
             f'UPDATE {fqn} t SET '
-            f'  t."_VALID_TO" = CURRENT_TIMESTAMP(), '
-            f'  t."_IS_CURRENT" = FALSE, '
-            f'  t."_LOAD_TS" = CURRENT_TIMESTAMP(), '
-            f'  t."_BATCH_ID" = \'{batch_id}\' '
+            f'  "_VALID_TO" = CURRENT_TIMESTAMP(), '
+            f'  "_IS_CURRENT" = FALSE, '
+            f'  "_LOAD_TS" = CURRENT_TIMESTAMP(), '
+            f'  "_BATCH_ID" = \'{batch_id}\' '
             f'FROM {stg_table} s '
             f'WHERE {on_clause} AND t."_IS_CURRENT" = TRUE'
         )
@@ -346,20 +351,29 @@ def copy_into_merge(cur, config: dict, batch_id: str,
             rows = cur.rowcount or 0
         else:
             on_clause = " AND ".join(f't."{k}" = s."{k}"' for k in keys)
-            update_set = ", ".join(f't."{c}" = s."{c}"' for c in biz_cols)
-            update_set += (f', t."_LOAD_TS" = CURRENT_TIMESTAMP()'
-                           f', t."_BATCH_ID" = \'{batch_id}\''
-                           f', t."_IS_DELETED" = FALSE'
-                           f', t."_DELETED_AT" = NULL')
+            update_set = ", ".join(
+                f'"{c}" = s."{c}"' for c in biz_cols
+            )
+            update_set += (
+                ', "_LOAD_TS" = CURRENT_TIMESTAMP()'
+                f", \"_BATCH_ID\" = '{batch_id}'"
+                ', "_IS_DELETED" = FALSE'
+                ', "_DELETED_AT" = NULL'
+            )
             insert_cols = col_list + ', "_LOAD_TS", "_BATCH_ID", "_IS_DELETED"'
             insert_vals = ", ".join(f's."{c}"' for c in biz_cols)
             insert_vals += f", CURRENT_TIMESTAMP(), '{batch_id}', FALSE"
 
-            cur.execute(
+            merge_sql = (
                 f"MERGE INTO {fqn} t USING {stg_table} s ON {on_clause}\n"
                 f"WHEN MATCHED THEN UPDATE SET {update_set}\n"
-                f"WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})"
+                f"WHEN NOT MATCHED THEN INSERT ({insert_cols}) "
+                f"VALUES ({insert_vals})"
             )
+
+            print(f"DEBUG MERGE SQL:\n{merge_sql}")
+            cur.execute(merge_sql)
+
             rows = cur.rowcount or 0
         print(f"   SCD1 MERGE/INSERT: {rows} rows into {fqn}")
 
@@ -439,3 +453,41 @@ def check_stage_before_load(cur, config: dict, sub: str, run_context: dict = Non
             })
 
     return files
+
+
+def _csv_file_format_clause(config: dict, file_format: str) -> str:
+    """Build a Snowflake CSV format using MIGRATION_CONFIG.DELIMITER."""
+    delimiter = str(config.get("DELIMITER") or ",").strip()
+
+    if len(delimiter) >= 2 and delimiter[0] == delimiter[-1] == "'":
+        delimiter = delimiter[1:-1]
+
+    if delimiter == r"\t":
+        delimiter = "\t"
+
+    if len(delimiter) != 1:
+        raise ValueError(f"Invalid DELIMITER: {delimiter!r}")
+
+    delimiter_sql = delimiter.replace("'", "''")
+    compression = "GZIP" if file_format.lower() == "csv_gzip" else "AUTO"
+
+    return (
+        "FILE_FORMAT = ("
+        "TYPE = CSV "
+        f"COMPRESSION = {compression} "
+        f"FIELD_DELIMITER = '{delimiter_sql}' "
+        "SKIP_HEADER = 0 "
+        "FIELD_OPTIONALLY_ENCLOSED_BY = NONE"
+        ")"
+    )
+
+
+def _file_format_clause(
+    config: dict,
+    file_format: str,
+    format_spec: dict,
+) -> str:
+    if file_format.lower() in {"csv", "csv_gzip"}:
+        return _csv_file_format_clause(config, file_format)
+
+    return f"FILE_FORMAT = (FORMAT_NAME = {format_spec['fmt']})"

@@ -83,12 +83,16 @@ class TeradataFullExtractor(BaseExtractor):
             td_conn.close()
 
         # Build SELECT statement
+        # Always CAST to VARCHAR to match the DEFINE SCHEMA (all VARCHAR(64000)).
+        # TPT validates that the Export Operator's output types match the schema;
+        # without the CAST, INTEGER/DATE/DECIMAL columns cause TPT02639.
         col_names = [name for name, _ in columns]
         if trim_cols:
             select_cols = ", ".join(
-                f"TRIM(CAST({c} AS VARCHAR(64000))) AS {c}" for c in col_names)
+                f"TRIM(CAST(\"{c}\" AS VARCHAR(64000))) AS \"{c}\"" for c in col_names)
         else:
-            select_cols = ", ".join(col_names)
+            select_cols = ", ".join(
+                f"CAST(\"{c}\" AS VARCHAR(64000)) AS \"{c}\"" for c in col_names)
 
         # Build WHERE condition
         condition = "(1=1)"

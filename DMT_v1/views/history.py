@@ -222,7 +222,7 @@ def render(conn):
                             if ai_enabled() and row.get("ERROR_MESSAGE"):
                                 ekey = f"_ai_err_{row.get('SOURCE_DB','')}.{row.get('SOURCE_TABLE','')}.{ei}"
                                 if st.button("🤖 Explain failure", key=f"btn{ekey}"):
-                                    with st.spinner("Asking Cortex…"):
+                                    with st.spinner("Asking AI Gateway…"):
                                         prompt = (
                                             "You are a Snowflake/MySQL data-migration expert. "
                                             "Explain this failure in 2-3 sentences and give a fix.\n"
@@ -230,9 +230,9 @@ def render(conn):
                                             f"Load type: {row.get('LOAD_TYPE','?')}\n"
                                             f"Failed step: {row.get('FAILED_STEP','?')}\n"
                                             f"Error: {row.get('ERROR_MESSAGE','')}")
-                                        st.session_state[ekey] = cortex_complete(prompt)
+                                        st.session_state[ekey] = cortex_complete(prompt, feature="history")
                                 if st.session_state.get(ekey):
-                                    st.info(f"🤖 **Cortex:** {st.session_state[ekey]}")
+                                    st.info(f"🤖 **AI:** {st.session_state[ekey]}")
                         except ImportError:
                             pass
 

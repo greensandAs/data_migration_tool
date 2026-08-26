@@ -161,22 +161,20 @@ def _get_type_mapping(sf_cur, config: dict, source_type: str, profile: dict) -> 
 
 
 def _ai_validate_mapping(sf_cur, mapping: list[dict], source_type: str) -> str:
-    """Validate type mapping using LLM gateway (OpenAI-compatible) or rule-based fallback.
+    """Validate type mapping using Org AI Gateway or rule-based fallback.
 
     LLM priority:
-      1. DMT_SETTINGS: LLM_API_BASE + LLM_API_KEY (org AI Gateway) — only if configured
-      2. Rule-based validation (always works, no cost)
-
-    Note: LLM is only called when explicitly configured. Budget-conscious:
-    uses max_tokens=300, concise prompt to minimize token usage.
+      1. Per-feature model (LLM_MODEL_DDL) from DMT_SETTINGS
+      2. Global model (LLM_MODEL) from DMT_SETTINGS
+      3. User's UI selection
+      4. Rule-based validation (if gateway not configured)
     """
-    from utils.shared import get_setting
+    from utils.shared import get_setting, cortex_complete
 
     api_base = get_setting(sf_cur, "LLM_API_BASE") or os.getenv("LLM_API_BASE", "")
     api_key = get_setting(sf_cur, "LLM_API_KEY") or os.getenv("LLM_API_KEY", "")
-    model = get_setting(sf_cur, "LLM_MODEL", "gemini-3.1-flash-lite") or os.getenv("LLM_MODEL", "gemini-3.1-flash-lite")
 
-    # Only use AI if explicitly configured — no fallback to Cortex (cost control)
+    # Only use AI if gateway is configured
     if not api_base or not api_key:
         return _rule_based_validate(mapping, source_type)
 
@@ -192,23 +190,12 @@ def _ai_validate_mapping(sf_cur, mapping: list[dict], source_type: str) -> str:
         "Reply: PASS or list issues only. Max 5 lines."
     )
 
-    try:
-        from openai import OpenAI
-        client = OpenAI(base_url=api_base, api_key=api_key)
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=300,
-        )
-        ai_result = response.choices[0].message.content
-        return f"**AI Review ({model}):**\n\n{ai_result}"
-    except ImportError:
-        return ("**`openai` package not installed.** Run: `pip install openai`\n\n---\n\n" +
+    result = cortex_complete(prompt, feature="ddl")
+    if result.startswith("("):
+        # Error from gateway — fallback to rule-based
+        return (f"**AI unavailable:** {result}\n\n---\n\n" +
                 _rule_based_validate(mapping, source_type))
-    except Exception as e:
-        return (f"**AI call failed:** {str(e)[:150]}\n\n---\n\n" +
-                _rule_based_validate(mapping, source_type))
+    return f"**AI Review:**\n\n{result}"
 
 
 def _rule_based_validate(mapping: list[dict], source_type: str) -> str:

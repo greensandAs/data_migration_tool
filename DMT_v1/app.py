@@ -277,24 +277,84 @@ def check_snowflake() -> tuple[bool, dict]:
                        "env": f"acct={'✓' if has_acct else '✗'} user={'✓' if has_user else '✗'} pwd={'✓' if has_pwd else '✗'}"}
 
 
-# ── AI (Cortex) helpers ───────────────────────────────────────────────────────
+# ── AI (Org AI Gateway) helpers ───────────────────────────────────────────────
 AI_MODEL = "llama3.1-70b"
 AI_MODELS = ["llama3.1-70b", "llama3.1-8b", "llama3.1-405b", "mistral-large2",
              "mixtral-8x7b", "snowflake-arctic", "claude-3-5-sonnet",
-             "reka-flash", "gemma-7b"]
+             "reka-flash", "gemma-7b", "gpt-4o", "gpt-4o-mini"]
+
+# Per-feature model defaults (configurable via DMT_SETTINGS)
+# Keys: LLM_MODEL_CONFIG, LLM_MODEL_DDL, LLM_MODEL_HISTORY
+# If not set, falls back to LLM_MODEL, then to user's UI selection.
+FEATURE_MODEL_KEYS = {
+    "config": "LLM_MODEL_CONFIG",
+    "ddl": "LLM_MODEL_DDL",
+    "history": "LLM_MODEL_HISTORY",
+}
 
 
 def ai_enabled() -> bool:
     return bool(st.session_state.get("_ai_on", False))
 
 
-def cortex_complete(prompt: str, model: str = None) -> str:
-    model = model or st.session_state.get("_ai_model", AI_MODEL)
+@st.cache_data(ttl=300)
+def _get_available_models() -> list[str]:
+    """Load model list from DMT_SETTINGS.LLM_MODELS_AVAILABLE, fall back to AI_MODELS."""
+    try:
+        conn = get_sf()
+        cur = conn.cursor()
+        from utils.shared import get_setting
+        models_csv = get_setting(cur, "LLM_MODELS_AVAILABLE")
+        cur.close()
+        if models_csv:
+            models = [m.strip() for m in models_csv.split(",") if m.strip()]
+            if models:
+                return models
+    except Exception:
+        pass
+    return AI_MODELS
+
+
+def cortex_complete(prompt: str, model: str = None, feature: str = None) -> str:
+    """Call Org AI Gateway. Resolves model priority:
+    1. Per-feature setting (LLM_MODEL_CONFIG, LLM_MODEL_DDL, LLM_MODEL_HISTORY)
+    2. Global setting (LLM_MODEL)
+    3. User's UI dropdown selection
+    """
+    ui_model = model or st.session_state.get("_ai_model", AI_MODEL)
     conn = get_sf()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT SNOWFLAKE.CORTEX.COMPLETE(%s, %s)", (model, prompt))
-        return (cur.fetchone()[0] or "").strip()
+        from utils.shared import get_setting
+        api_base = get_setting(cur, "LLM_API_BASE") or os.getenv("LLM_API_BASE", "")
+        api_key = get_setting(cur, "LLM_API_KEY") or os.getenv("LLM_API_KEY", "")
+
+        if not api_base or not api_key:
+            return "(AI Gateway not configured. Set LLM_API_BASE and LLM_API_KEY in DMT_SETTINGS.)"
+
+        # Model resolution: per-feature > global > UI selection
+        resolved_model = ui_model
+        global_model = get_setting(cur, "LLM_MODEL") or os.getenv("LLM_MODEL", "")
+        if global_model:
+            resolved_model = global_model
+        if feature and feature in FEATURE_MODEL_KEYS:
+            feature_model = get_setting(cur, FEATURE_MODEL_KEYS[feature]) or ""
+            if feature_model:
+                resolved_model = feature_model
+
+        from openai import OpenAI
+        client = OpenAI(base_url=api_base, api_key=api_key)
+        response = client.chat.completions.create(
+            model=resolved_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=500,
+        )
+        return (response.choices[0].message.content or "").strip()
+    except ImportError:
+        return "(openai package not installed. Run: pip install openai)"
+    except Exception as e:
+        return f"(AI error: {e})"
     finally:
         cur.close()
 
@@ -399,12 +459,16 @@ def render_header():
         st.session_state["_ai_on"] = st.toggle(
             "🤖 AI Assist", value=st.session_state.get("_ai_on", False),
             key="header_ai_toggle",
-            help="Enable Cortex-powered config recommendations and failure explanations.")
+            help="Enable AI Gateway-powered recommendations and failure explanations. "
+                 "Configure per-feature models in DMT_SETTINGS (LLM_MODEL_CONFIG, LLM_MODEL_DDL, LLM_MODEL_HISTORY).")
         if st.session_state["_ai_on"]:
+            # Load available models from DMT_SETTINGS or fall back to hardcoded list
+            available_models = _get_available_models()
+            default_model = st.session_state.get("_ai_model", AI_MODEL)
+            idx = available_models.index(default_model) if default_model in available_models else 0
             st.session_state["_ai_model"] = st.selectbox(
-                "Model", AI_MODELS,
-                index=AI_MODELS.index(st.session_state.get("_ai_model", AI_MODEL))
-                if st.session_state.get("_ai_model", AI_MODEL) in AI_MODELS else 0,
+                "Model (override)", available_models,
+                index=idx,
                 key="header_ai_model", label_visibility="collapsed")
         st.markdown("</div>", unsafe_allow_html=True)
 

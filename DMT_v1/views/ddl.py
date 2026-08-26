@@ -29,6 +29,20 @@ def _get_source_ddl_mysql(profile: dict, source_db: str, source_table: str) -> s
     return row[1] if row else f"-- Could not retrieve DDL for {source_db}.{source_table}"
 
 
+def _format_source_ddl(ddl: str) -> str:
+    """Format a raw DDL string for readability (add line breaks at structural points)."""
+    import re
+    # If already multi-line and readable, return as-is
+    if ddl.count("\n") > 3:
+        return ddl
+    # Add line breaks at key SQL structural points
+    ddl = re.sub(r"\(\s*", "(\n    ", ddl, count=1)  # after opening paren
+    ddl = re.sub(r",\s*(?=[A-Za-z_\"])", ",\n    ", ddl)  # before each column
+    ddl = re.sub(r"\)\s*(PRIMARY INDEX|UNIQUE PRIMARY|NO PRIMARY|PARTITION BY|;)", r"\n) \1", ddl)
+    ddl = re.sub(r"\)\s*$", "\n);", ddl)
+    return ddl
+
+
 def _get_source_ddl_teradata(profile: dict, source_db: str, source_table: str) -> str:
     """Extract CREATE TABLE DDL from Teradata via SHOW TABLE."""
     import teradatasql
@@ -52,7 +66,7 @@ def _get_source_ddl_teradata(profile: dict, source_db: str, source_table: str) -
         ddl += "\n);"
     cur.close()
     conn.close()
-    return ddl
+    return _format_source_ddl(ddl)
 
 
 def _get_snowflake_ddl(sf_cur, config: dict, source_type: str) -> tuple[str, list[tuple]]:

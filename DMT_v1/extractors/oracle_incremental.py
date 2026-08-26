@@ -167,10 +167,11 @@ class OracleIncrementalExtractor(BaseExtractor):
                 # Timestamp: OR across multiple CDC columns
                 ts_conditions = []
                 for col in cdc_cols:
-                    # Use TO_TIMESTAMP with a format that handles common patterns
+                    # Use TO_TIMESTAMP with FF6 to handle up to microsecond precision
+                    # (Oracle stores TIMESTAMP with up to 9 fractional digits)
                     ts_conditions.append(
                         f"{col} > TO_TIMESTAMP('{cursor_value}', "
-                        f"'YYYY-MM-DD HH24:MI:SS.FF3')")
+                        f"'YYYY-MM-DD HH24:MI:SS.FF6')")
                 if len(ts_conditions) == 1:
                     conditions.append(ts_conditions[0])
                 else:
@@ -207,7 +208,7 @@ class OracleIncrementalExtractor(BaseExtractor):
             return None
         if wm_type == "id":
             return str(value)
-        # Timestamp types
+        # Timestamp types — always store 6 fractional digits to match FF6 format
         if isinstance(value, datetime):
-            return value.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            return value.strftime("%Y-%m-%d %H:%M:%S.%f")
         return str(value)

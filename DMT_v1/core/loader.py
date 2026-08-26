@@ -475,13 +475,21 @@ def _csv_file_format_clause(config: dict, file_format: str) -> str:
     delimiter_sql = delimiter.replace("'", "''")
     compression = "GZIP" if file_format.lower() == "csv_gzip" else "AUTO"
 
+    # TPT (Teradata) exports VARCHAR columns with double-quote enclosure;
+    # BCP (MSSQL) does not quote fields. Use NONE for non-TPT sources to
+    # avoid accidentally stripping literal quotes from MSSQL string data.
+    if file_format.lower() == "csv":
+        enclosed_by = "'\"'"
+    else:
+        enclosed_by = "NONE"
+
     return (
         "FILE_FORMAT = ("
         "TYPE = CSV "
         f"COMPRESSION = {compression} "
         f"FIELD_DELIMITER = '{delimiter_sql}' "
         "SKIP_HEADER = 0 "
-        "FIELD_OPTIONALLY_ENCLOSED_BY = NONE"
+        f"FIELD_OPTIONALLY_ENCLOSED_BY = {enclosed_by}"
         ")"
     )
 

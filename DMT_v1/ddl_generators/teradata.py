@@ -285,7 +285,7 @@ def list_tables(td_conn, database: str) -> list[str]:
     cur = td_conn.cursor()
     cur.execute(
         "SELECT TRIM(TableName) FROM DBC.TablesV "
-        "WHERE UPPER(DatabaseName) = UPPER(?) AND TableKind = 'T' "
+        "WHERE UPPER(DatabaseName) = UPPER(?) AND TableKind IN ('T', 'O') "
         "ORDER BY TableName", (database,))
     tables = [row[0] for row in cur.fetchall()]
     cur.close()

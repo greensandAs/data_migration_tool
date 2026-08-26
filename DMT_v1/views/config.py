@@ -741,7 +741,11 @@ def render(conn):
 
     if discover_clicked and sel_schema:
         with st.spinner(f"Scanning `{sel_schema}`..."):
-            entries = _discover_tables(sel_profile, sel_schema)
+            try:
+                entries = _discover_tables(sel_profile, sel_schema)
+            except Exception as e:
+                st.error(f"Discovery failed: {e}")
+                entries = []
         st.session_state["_discovered"] = entries
         st.session_state["_discovered_schema"] = sel_schema
 

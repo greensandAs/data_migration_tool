@@ -190,7 +190,7 @@ def _ai_validate_mapping(sf_cur, mapping: list[dict], source_type: str) -> str:
         "Reply: PASS or list issues only. Max 5 lines."
     )
 
-    result = cortex_complete(prompt, feature="ddl")
+    result = cortex_complete(prompt, feature="ddl", conn=sf_cur.connection)
     if result.startswith("("):
         # Error from gateway — fallback to rule-based
         return (f"**AI unavailable:** {result}\n\n---\n\n" +

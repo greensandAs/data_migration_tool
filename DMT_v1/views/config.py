@@ -362,8 +362,8 @@ def _discover_tables_oracle(profile: dict, schema: str, password: str) -> list[d
     return entries
 
 
-def _ai_recommend(source_db: str, source_table: str, profile: dict):
-    """Ask Cortex for config recommendations."""
+def _ai_recommend(source_db: str, source_table: str, profile: dict, sf_conn=None):
+    """Ask AI Gateway for config recommendations."""
     import mysql.connector
     password = os.getenv(profile.get("AUTH_SECRET") or "", "")
     myconn = mysql.connector.connect(
@@ -398,7 +398,7 @@ def _ai_recommend(source_db: str, source_table: str, profile: dict):
         "merge_keys, partition_col, rationale (one sentence).")
 
     from utils.shared import cortex_complete
-    raw = cortex_complete(prompt, feature="config")
+    raw = cortex_complete(prompt, feature="config", conn=sf_conn)
     try:
         txt = raw.strip()
         if "```" in txt:

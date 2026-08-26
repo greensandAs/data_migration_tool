@@ -230,7 +230,7 @@ def render(conn):
                                             f"Load type: {row.get('LOAD_TYPE','?')}\n"
                                             f"Failed step: {row.get('FAILED_STEP','?')}\n"
                                             f"Error: {row.get('ERROR_MESSAGE','')}")
-                                        st.session_state[ekey] = cortex_complete(prompt, feature="history")
+                                        st.session_state[ekey] = cortex_complete(prompt, feature="history", conn=conn)
                                 if st.session_state.get(ekey):
                                     st.info(f"🤖 **AI:** {st.session_state[ekey]}")
                         except ImportError:

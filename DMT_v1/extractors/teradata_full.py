@@ -177,8 +177,9 @@ class TeradataFullExtractor(BaseExtractor):
                              select_stmt: str, instance_count: int) -> str:
         """Generate TPT export script content."""
         # Schema definition (all columns as VARCHAR for export)
+        # Quote column names to avoid conflicts with TPT reserved words (e.g. ID, DATE, TYPE)
         schema_cols = "\n".join(
-            f"        {',' if i > 0 else ' '}{col} VARCHAR(64000)"
+            f"        {',' if i > 0 else ' '}\"{col}\" VARCHAR(64000)"
             for i, col in enumerate(col_names)
         )
 

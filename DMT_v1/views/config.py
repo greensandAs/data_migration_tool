@@ -398,7 +398,7 @@ def _ai_recommend(source_db: str, source_table: str, profile: dict):
         "merge_keys, partition_col, rationale (one sentence).")
 
     from utils.shared import cortex_complete
-    raw = cortex_complete(prompt)
+    raw = cortex_complete(prompt, feature="config")
     try:
         txt = raw.strip()
         if "```" in txt:

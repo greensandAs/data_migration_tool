@@ -117,14 +117,26 @@ live_running_panel = (_fragment(run_every=1.0)(_render_running_panel)
                       if _fragment else None)
 
 
-# ── AI helpers (Cortex) ───────────────────────────────────────────────────────
+# ── AI helpers (Org AI Gateway) ───────────────────────────────────────────────
 def ai_enabled() -> bool:
     """Check if AI Assist is toggled on in the sidebar."""
     return bool(st.session_state.get("_ai_on", False))
 
 
-def cortex_complete(prompt: str, model: str = None, conn=None) -> str:
-    """Call Snowflake Cortex COMPLETE. Pass conn explicitly or it reads from session."""
+# Per-feature model setting keys
+FEATURE_MODEL_KEYS = {
+    "config": "LLM_MODEL_CONFIG",
+    "ddl": "LLM_MODEL_DDL",
+    "history": "LLM_MODEL_HISTORY",
+}
+
+
+def cortex_complete(prompt: str, model: str = None, conn=None, feature: str = None) -> str:
+    """Call Org AI Gateway (OpenAI-compatible). Resolves model priority:
+    1. Per-feature setting (LLM_MODEL_CONFIG, LLM_MODEL_DDL, LLM_MODEL_HISTORY)
+    2. Global setting (LLM_MODEL)
+    3. User's UI dropdown selection
+    """
     model = model or st.session_state.get("_ai_model", "llama3.1-70b")
     try:
         if conn is None:
@@ -132,10 +144,37 @@ def cortex_complete(prompt: str, model: str = None, conn=None) -> str:
         if conn is None:
             return "(No Snowflake connection available for AI)"
         cur = conn.cursor()
-        cur.execute("SELECT SNOWFLAKE.CORTEX.COMPLETE(%s, %s)", (model, prompt))
-        result = (cur.fetchone()[0] or "").strip()
+
+        # Read gateway config from DMT_SETTINGS
+        api_base = get_setting(cur, "LLM_API_BASE") or os.getenv("LLM_API_BASE", "")
+        api_key = get_setting(cur, "LLM_API_KEY") or os.getenv("LLM_API_KEY", "")
+
+        if not api_base or not api_key:
+            cur.close()
+            return "(AI Gateway not configured. Set LLM_API_BASE and LLM_API_KEY in DMT_SETTINGS.)"
+
+        # Model resolution: per-feature > global > UI selection
+        resolved_model = model
+        global_model = get_setting(cur, "LLM_MODEL") or os.getenv("LLM_MODEL", "")
+        if global_model:
+            resolved_model = global_model
+        if feature and feature in FEATURE_MODEL_KEYS:
+            feature_model = get_setting(cur, FEATURE_MODEL_KEYS[feature]) or ""
+            if feature_model:
+                resolved_model = feature_model
         cur.close()
-        return result
+
+        from openai import OpenAI
+        client = OpenAI(base_url=api_base, api_key=api_key)
+        response = client.chat.completions.create(
+            model=resolved_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=500,
+        )
+        return (response.choices[0].message.content or "").strip()
+    except ImportError:
+        return "(openai package not installed. Run: pip install openai)"
     except Exception as e:
         return f"(AI error: {e})"
 TXT_PRIMARY = "#F0F4F8"

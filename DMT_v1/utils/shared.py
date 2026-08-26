@@ -142,6 +142,13 @@ def cortex_complete(prompt: str, model: str = None, conn=None, feature: str = No
         if conn is None:
             conn = st.session_state.get("_sf_conn_obj")
         if conn is None:
+            # Try to get connection from app's cached connector
+            try:
+                from app import get_sf
+                conn = get_sf()
+            except Exception:
+                pass
+        if conn is None:
             return "(No Snowflake connection available for AI)"
         cur = conn.cursor()
 

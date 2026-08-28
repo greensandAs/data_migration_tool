@@ -31,6 +31,31 @@ def _sanitize_sql_string(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _escape_for_sql_literal(value: str) -> str:
+    """Escape a value for use inside a Snowflake SQL single-quoted literal.
+
+    Handles backslash (must be doubled) and single quotes (must be doubled).
+    """
+    if not value:
+        return value
+    return value.replace("\\", "\\\\").replace("'", "''")
+
+
+def _sql_char_literal(ch: str) -> str:
+    """Safely quote a single-character value for Snowflake FILE FORMAT params.
+
+    Uses $$-quoting for backslash and single-quote to avoid SQL parse errors.
+    Snowflake does NOT use C-style escape sequences in standard string literals,
+    but the parser still chokes on a lone backslash before a closing quote.
+    Dollar-quoting ($$x$$) avoids all ambiguity.
+    """
+    if not ch or ch.upper() == "NONE":
+        return "NONE"
+    if ch in ("\\", "'"):
+        return f"$${ch}$$"
+    return f"'{ch}'"
+
+
 def _stage_path(config: dict) -> str:
     """Build the full @stage/path reference."""
     stage = config["STAGE_NAME"]
@@ -70,9 +95,9 @@ def _build_file_format_sql(config: dict, fmt_name: str) -> str:
                 f"  {extras};")
 
     # CSV (default) — sanitize all user-provided values
-    delimiter = _sanitize_sql_string(config.get("FIELD_DELIMITER") or ",")
-    enclosed = _sanitize_sql_string(config.get("FIELD_ENCLOSED_BY") or "")
-    escape = _sanitize_sql_string(config.get("ESCAPE_CHARACTER") or "")
+    delimiter = config.get("FIELD_DELIMITER") or ","
+    enclosed = config.get("FIELD_ENCLOSED_BY") or ""
+    escape = config.get("ESCAPE_CHARACTER") or ""
     skip = int(config.get("SKIP_HEADER") or 1)
     null_if = config.get("NULL_IF") or "('')"
     extras = config.get("FILE_FORMAT_EXTRAS") or ""
@@ -80,12 +105,18 @@ def _build_file_format_sql(config: dict, fmt_name: str) -> str:
     parts = [
         f"CREATE OR REPLACE FILE FORMAT {fmt_name}",
         f"  TYPE = 'CSV'",
-        f"  FIELD_DELIMITER = '{delimiter}'",
+        f"  FIELD_DELIMITER = {_sql_char_literal(delimiter)}",
     ]
     if enclosed:
-        parts.append(f"  FIELD_OPTIONALLY_ENCLOSED_BY = '{enclosed}'")
+        if enclosed.upper() == "NONE":
+            parts.append(f"  FIELD_OPTIONALLY_ENCLOSED_BY = NONE")
+        else:
+            parts.append(f"  FIELD_OPTIONALLY_ENCLOSED_BY = {_sql_char_literal(enclosed)}")
     if escape:
-        parts.append(f"  ESCAPE = '{escape}'")
+        if escape.upper() == "NONE":
+            parts.append(f"  ESCAPE_UNENCLOSED_FIELD = NONE")
+        else:
+            parts.append(f"  ESCAPE_UNENCLOSED_FIELD = {_sql_char_literal(escape)}")
     parts.append(f"  SKIP_HEADER = {skip}")
     parts.append(f"  NULL_IF = {null_if}")
     if extras:
@@ -96,7 +127,7 @@ def _build_file_format_sql(config: dict, fmt_name: str) -> str:
 def _count_staged_files(cur, stage_path: str, pattern: str,
                         fmt_name: str) -> tuple[int, int]:
     """Count files and rows available on stage matching the pattern."""
-    safe_pattern = _sanitize_sql_string(pattern)
+    safe_pattern = _escape_for_sql_literal(pattern)
     try:
         cur.execute(
             f"SELECT COUNT(DISTINCT METADATA$FILENAME) AS FILES, COUNT(*) AS ROWS\n"
@@ -172,7 +203,7 @@ def _build_copy_into(config: dict, target_fqn: str, stage_path: str,
     purge = config.get("PURGE_FILES", False)
     extras = config.get("COPY_EXTRAS") or ""
     file_type = (config.get("FILE_TYPE") or "CSV").upper()
-    safe_pattern = _sanitize_sql_string(pattern)
+    safe_pattern = _escape_for_sql_literal(pattern)
 
     # If column list provided, target only data columns (skip audit cols)
     if columns and file_type == "CSV":
@@ -185,9 +216,10 @@ def _build_copy_into(config: dict, target_fqn: str, stage_path: str,
         f"COPY INTO {target}",
         f"FROM {stage_path}",
         f"FILE_FORMAT = (FORMAT_NAME = '{fmt_name}')",
-        f"PATTERN = '{safe_pattern}'",
-        f"ON_ERROR = {on_error}",
     ]
+    if safe_pattern:
+        parts.append(f"PATTERN = '{safe_pattern}'")
+    parts.append(f"ON_ERROR = {on_error}")
 
     if match_by:
         parts.append(f"MATCH_BY_COLUMN_NAME = {match_by}")
@@ -323,7 +355,7 @@ def run_ingestion(sf_conn, config: dict, batch_id: str = None,
 
         # Step 1: Create temporary file format
         fmt_sql = _build_file_format_sql(config, fmt_name)
-        print(f"   [{job_name}] creating file format...")
+        print(f"   [{job_name}] creating file format...\n{fmt_sql}")
         cur.execute(fmt_sql)
 
         # Step 2: Count source files

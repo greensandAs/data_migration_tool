@@ -58,7 +58,7 @@ def render(conn):
 
             # ── Run Controls (styled card) ────────────────────────────────────
             from utils.ui_theme import section_card_start as _scs2, section_card_end as _sce2
-            _scs2("Run Ingestion", "▶️", border_color=ST_SUCCESS)
+            _scs2("Run Ingestion", "▶️", border_color="#34D058")
 
             run_mode = st.radio(
                 "Execution Mode",

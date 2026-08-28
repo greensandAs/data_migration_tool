@@ -248,6 +248,7 @@ def _build_copy_into(config: dict, target_fqn: str, stage_path: str,
     on_error = config.get("ON_ERROR") or "ABORT_STATEMENT"
     match_by = config.get("MATCH_BY_COLUMN_NAME")
     purge = config.get("PURGE_FILES", False)
+    force = config.get("FORCE_RELOAD", False)  # Only force when user explicitly requests
     extras = config.get("COPY_EXTRAS") or ""
     file_type = (config.get("FILE_TYPE") or "CSV").upper()
     safe_pattern = _escape_for_sql_literal(pattern)
@@ -277,6 +278,8 @@ def _build_copy_into(config: dict, target_fqn: str, stage_path: str,
 
     if purge:
         parts.append("PURGE = TRUE")
+    if force:
+        parts.append("FORCE = TRUE")
     if extras:
         parts.append(extras)
 
@@ -545,7 +548,7 @@ def _parse_copy_results(cur, copy_results: list, target_fqn: str) -> tuple[int, 
 
 
 def run_all(sf_conn, batch_id: str = None,
-            only_job: str = None) -> list[dict]:
+            only_job: str = None, force_reload: bool = False) -> list[dict]:
     """Run all active file ingestion jobs (or a single named job)."""
     batch_id = batch_id or uuid.uuid4().hex[:12]
     cur = sf_conn.cursor()
@@ -565,6 +568,8 @@ def run_all(sf_conn, batch_id: str = None,
 
     results = []
     for config in configs:
+        if force_reload:
+            config["FORCE_RELOAD"] = True
         r = run_ingestion(sf_conn, config, batch_id=batch_id)
         results.append(r)
 

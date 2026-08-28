@@ -220,13 +220,19 @@ def render(conn):
                 ["Run All Active", "Run Single Job"],
                 horizontal=True, key="fi_run_mode")
 
+            force_reload = st.checkbox(
+                "Force Reload",
+                value=False, key="fi_force_reload",
+                help="Re-load files even if previously loaded. "
+                     "Use when retrying after a failed run.")
+
             if run_mode == "Run All Active":
                 st.caption(f"Runs all {len(active_run)} active job(s) sequentially.")
                 if st.button("Run All Active Jobs", type="primary",
                              use_container_width=True, key="fi_run_all"):
                     with st.spinner("Running all active ingestion jobs..."):
                         from core.file_ingester import run_all
-                        results = run_all(conn)
+                        results = run_all(conn, force_reload=force_reload)
                         items = []
                         for r in results:
                             status = r.get("STATUS", "?")
@@ -248,7 +254,8 @@ def render(conn):
                              use_container_width=True, key="fi_run_single_btn"):
                     with st.spinner(f"Running {sel_job}..."):
                         from core.file_ingester import run_all
-                        results = run_all(conn, only_job=sel_job)
+                        results = run_all(conn, only_job=sel_job,
+                                          force_reload=force_reload)
                         if results:
                             r = results[0]
                             if r["STATUS"] == "success":

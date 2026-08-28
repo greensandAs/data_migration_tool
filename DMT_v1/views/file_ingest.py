@@ -10,11 +10,28 @@ Provides UI for managing cloud file ingestion jobs:
 """
 from __future__ import annotations
 
+import re
 import streamlit as st
 import pandas as pd
 
 from metadata import file_ingest_config
 from utils.shared import empty_state
+
+
+def _normalize_file_pattern(pattern: str) -> str:
+    """Convert glob-style patterns to regex for Snowflake PATTERN parameter."""
+    if not pattern or pattern.strip() == "*":
+        return ".*"
+    pattern = pattern.strip()
+    if pattern.startswith("*.") and not pattern.startswith(".*"):
+        ext = re.escape(pattern[2:])
+        return f".*\\.{ext}"
+    if "*." in pattern and ".*" not in pattern:
+        parts = pattern.rsplit("*.", 1)
+        prefix = re.escape(parts[0]) if parts[0] else ".*"
+        ext = re.escape(parts[1])
+        return f"{prefix}.*\\.{ext}"
+    return pattern
 
 # Brand tokens
 ST_SUCCESS = "#34D058"
@@ -627,7 +644,7 @@ def render(conn):
                     "ACTIVE": active,
                     "STAGE_NAME": stage_name.strip() if isinstance(stage_name, str) else stage_name,
                     "CLOUD_PATH": cloud_path.strip(),
-                    "FILE_PATTERN": file_pattern.strip(),
+                    "FILE_PATTERN": _normalize_file_pattern(file_pattern.strip()),
                     "FILE_TYPE": file_type,
                     "TARGET_DB": target_db.strip().upper() if isinstance(target_db, str) else target_db,
                     "TARGET_SCHEMA": (target_schema.strip().upper() if isinstance(target_schema, str) else target_schema) or "RAW",

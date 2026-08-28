@@ -98,14 +98,24 @@ def update_run_status(cur, config_id: str, *,
                       status: str, file_count: int = None,
                       row_count: int = None, error: str = None):
     """Update tracking columns after a run."""
-    cur.execute(
-        f"UPDATE {_TABLE} SET "
-        "LAST_RUN_STATUS = %s, LAST_RUN_AT = CURRENT_TIMESTAMP(), "
-        "LAST_FILE_COUNT = %s, LAST_ROW_COUNT = %s, LAST_ERROR = %s, "
-        "UPDATED_AT = CURRENT_TIMESTAMP() "
-        "WHERE CONFIG_ID = %s",
-        (status, file_count, row_count,
-         str(error)[:2000] if error else None, config_id))
+    try:
+        cur.execute(
+            f"UPDATE {_TABLE} SET "
+            "LAST_RUN_STATUS = %s, LAST_RUN_AT = CURRENT_TIMESTAMP(), "
+            "LAST_FILE_COUNT = %s, LAST_ROW_COUNT = %s, LAST_ERROR = %s, "
+            "UPDATED_AT = CURRENT_TIMESTAMP() "
+            "WHERE CONFIG_ID = %s",
+            (status, file_count, row_count,
+             str(error)[:2000] if error else None, config_id))
+    except Exception:
+        # Fallback if LAST_ERROR column doesn't exist yet
+        cur.execute(
+            f"UPDATE {_TABLE} SET "
+            "LAST_RUN_STATUS = %s, LAST_RUN_AT = CURRENT_TIMESTAMP(), "
+            "LAST_FILE_COUNT = %s, LAST_ROW_COUNT = %s, "
+            "UPDATED_AT = CURRENT_TIMESTAMP() "
+            "WHERE CONFIG_ID = %s",
+            (status, file_count, row_count, config_id))
 
 
 # ── Log table operations ──────────────────────────────────────────────────────

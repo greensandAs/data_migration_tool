@@ -20,11 +20,10 @@ from views.dashboard import render as render_dashboard
 from views.connections import render as render_connections
 from views.config import render as render_config
 from views.run import render as render_run
-from views.history import render as render_history
-from views.monitoring import render as render_monitoring
 from views.ddl import render as render_ddl
 from views.file_ingest import render as render_file_ingest
 from views.snowpipe_wizard import render as render_snowpipe_wizard
+from views.observability import render as render_observability
 
 try:
     from dotenv import load_dotenv
@@ -591,8 +590,7 @@ PAGES = {
     "Snowpipe (Beta)": render_snowpipe_wizard,
     "DDL": render_ddl,
     "Run": render_run,
-    "History": render_history,
-    "Monitoring": render_monitoring,
+    "Observability": render_observability,
 }
 
 with st.sidebar:
@@ -629,8 +627,7 @@ with st.sidebar:
         "Config": "⚙️",
         "DDL": "🏗️",
         "Run": "▶️",
-        "History": "📜",
-        "Monitoring": "🩺",
+        "Observability": "📈",
         "Connections": "🔌",
     }
     for page_name, icon in NAV_MIGRATION.items():

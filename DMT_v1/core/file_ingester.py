@@ -52,20 +52,20 @@ def _build_file_format_sql(config: dict, fmt_name: str) -> str:
 
     if file_type == "PARQUET":
         extras = config.get("FILE_FORMAT_EXTRAS") or ""
-        return (f"CREATE OR REPLACE TEMPORARY FILE FORMAT {fmt_name}\n"
+        return (f"CREATE OR REPLACE FILE FORMAT {fmt_name}\n"
                 f"  TYPE = 'PARQUET'\n"
                 f"  {extras};")
 
     if file_type == "JSON":
         extras = config.get("FILE_FORMAT_EXTRAS") or ""
-        return (f"CREATE OR REPLACE TEMPORARY FILE FORMAT {fmt_name}\n"
+        return (f"CREATE OR REPLACE FILE FORMAT {fmt_name}\n"
                 f"  TYPE = 'JSON'\n"
                 f"  STRIP_OUTER_ARRAY = TRUE\n"
                 f"  {extras};")
 
     if file_type == "AVRO":
         extras = config.get("FILE_FORMAT_EXTRAS") or ""
-        return (f"CREATE OR REPLACE TEMPORARY FILE FORMAT {fmt_name}\n"
+        return (f"CREATE OR REPLACE FILE FORMAT {fmt_name}\n"
                 f"  TYPE = 'AVRO'\n"
                 f"  {extras};")
 
@@ -78,7 +78,7 @@ def _build_file_format_sql(config: dict, fmt_name: str) -> str:
     extras = config.get("FILE_FORMAT_EXTRAS") or ""
 
     parts = [
-        f"CREATE OR REPLACE TEMPORARY FILE FORMAT {fmt_name}",
+        f"CREATE OR REPLACE FILE FORMAT {fmt_name}",
         f"  TYPE = 'CSV'",
         f"  FIELD_DELIMITER = '{delimiter}'",
     ]
@@ -312,7 +312,7 @@ def run_ingestion(sf_conn, config: dict, batch_id: str = None,
         "RUN_START": run_start,
     }
 
-    fmt_name = f"DMT_INGEST_FMT_{job_uid}"
+    fmt_name = f"HISTLOAD_DB.META.DMT_INGEST_FMT_{job_uid}"
 
     try:
         stage_path = _stage_path(config)

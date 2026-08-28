@@ -54,14 +54,45 @@ def render(conn):
                              use_container_width=True, hide_index=True)
                 st.caption(f"{len(si_rows)} integration(s) found")
             else:
-                st.info("No storage integrations found. Create one below.")
+                st.info("No storage integrations found. "
+                       "Create one in Snowflake using `CREATE STORAGE INTEGRATION` DDL.")
         except Exception as e:
             st.warning(f"Cannot list integrations: {e}")
+            st.caption("Requires ACCOUNTADMIN or appropriate privileges.")
         section_card_end()
 
-        # Create new integration
-        section_card_start("Create Storage Integration", "➕", border_color=ST_PENDING)
-        st.caption("Creates a storage integration to allow Snowflake access to your cloud bucket.")
+        # Describe integration (read-only)
+        section_card_start("Describe Integration", "🔍", border_color=ST_PENDING)
+        st.caption("View trust relationship details for an existing integration.")
+        try:
+            cur.execute("SHOW STORAGE INTEGRATIONS")
+            si_rows2 = cur.fetchall()
+            si_name_idx2 = next(i for i, d in enumerate(cur.description) if d[0] == "name")
+            si_names = [r[si_name_idx2] for r in si_rows2]
+        except Exception:
+            si_names = []
+
+        if si_names:
+            sel_si = st.selectbox("Select Integration", [""] + si_names,
+                                  key="spw_desc_si")
+            if sel_si:
+                try:
+                    cur.execute(f"DESCRIBE INTEGRATION {sel_si}")
+                    desc_rows = cur.fetchall()
+                    desc_cols = [d[0] for d in cur.description]
+                    st.dataframe(pd.DataFrame(desc_rows, columns=desc_cols),
+                                 use_container_width=True, hide_index=True)
+                except Exception as e:
+                    st.error(f"Cannot describe: {e}")
+        else:
+            st.info("No integrations available to describe.")
+
+        info_box(
+            "Storage integrations are created in Snowflake directly: "
+            "<code>CREATE STORAGE INTEGRATION ... STORAGE_PROVIDER='S3' ...</code><br>"
+            "After creation, configure the trust policy in your cloud provider (AWS IAM / Azure AD / GCS).",
+            icon="💡")
+        section_card_end()
 
         provider = st.selectbox("Cloud Provider", ["AWS S3", "Azure Blob", "GCS"],
                                 key="spw_si_provider")

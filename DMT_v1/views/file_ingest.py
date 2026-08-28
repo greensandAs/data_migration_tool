@@ -825,10 +825,12 @@ def render(conn):
         from utils.ui_theme import section_card_start as _scs, section_card_end as _sce
 
         st.markdown("#### Stages & Storage Integrations")
-        st.caption("View available storage integrations and external stages in your account.")
+        st.caption("View existing integrations and create external stages for file ingestion.")
 
-        # ── Storage Integrations ─────────────────────────────────────────────
+        # ── Storage Integrations (read-only) ─────────────────────────────────
         _scs("Storage Integrations", "🔗", border_color="#a78bfa")
+        st.caption("Storage integrations are created in Snowflake directly "
+                   "(requires ACCOUNTADMIN + cloud IAM setup).")
         try:
             cur.execute("SHOW STORAGE INTEGRATIONS")
             si_rows = cur.fetchall()
@@ -841,14 +843,13 @@ def render(conn):
                              use_container_width=True, hide_index=True)
                 st.caption(f"{len(si_rows)} storage integration(s) found")
             else:
-                st.info("No storage integrations found in this account.")
+                st.info("No storage integrations found. Create one in Snowflake worksheet first.")
         except Exception as e:
             st.warning(f"Cannot list storage integrations: {e}")
-            st.caption("Requires ACCOUNTADMIN or appropriate privileges.")
         _sce()
 
-        # ── External Stages ──────────────────────────────────────────────────
-        _scs("External & Internal Stages", "📦", border_color="#58A6FF")
+        # ── Existing Stages ──────────────────────────────────────────────────
+        _scs("Existing Stages", "📦", border_color="#58A6FF")
         try:
             cur.execute("SHOW STAGES IN ACCOUNT")
             stg_rows = cur.fetchall()
@@ -859,7 +860,6 @@ def render(conn):
                                            "url", "type", "cloud", "owner"]
                                if c in stg_df.columns]
 
-                # Paginate stages
                 STG_PER_PAGE = 15
                 total_stg = len(stg_df)
                 total_stg_pages = max(1, (total_stg + STG_PER_PAGE - 1) // STG_PER_PAGE)
@@ -891,26 +891,58 @@ def render(conn):
             st.warning(f"Cannot list stages: {e}")
         _sce()
 
-        # ── Create Internal Stage (quick action) ─────────────────────────────
-        _scs("Quick Create — Internal Stage", "➕", border_color=ST_SUCCESS)
-        st.caption("Create a simple internal stage for file uploads (no cloud integration needed).")
-        cs1, cs2, cs3 = st.columns(3)
-        new_stg_db = cs1.text_input("Database", value="HISTLOAD_DB", key="fi_new_stg_db")
-        new_stg_schema = cs2.text_input("Schema", value="META", key="fi_new_stg_schema")
-        new_stg_name = cs3.text_input("Stage Name", placeholder="MY_UPLOAD_STAGE", key="fi_new_stg_name")
+        # ── Create External Stage ────────────────────────────────────────────
+        _scs("Create External Stage", "➕", border_color=ST_SUCCESS)
+        st.caption("Create an external stage linked to a storage integration.")
 
-        if st.button("Create Stage", key="fi_create_stg", use_container_width=True):
-            if new_stg_name.strip():
+        # Integration picker
+        try:
+            cur.execute("SHOW STORAGE INTEGRATIONS")
+            si_rows2 = cur.fetchall()
+            si_name_idx = next(i for i, d in enumerate(cur.description) if d[0] == "name")
+            integrations = [r[si_name_idx] for r in si_rows2]
+        except Exception:
+            integrations = []
+
+        cs1, cs2, cs3 = st.columns(3)
+        new_stg_db = cs1.text_input("Database *", value="HISTLOAD_DB", key="fi_new_stg_db")
+        new_stg_schema = cs2.text_input("Schema *", value="META", key="fi_new_stg_schema")
+        new_stg_name = cs3.text_input("Stage Name *", placeholder="MY_EXT_STAGE",
+                                      key="fi_new_stg_name")
+
+        cs4, cs5 = st.columns(2)
+        if integrations:
+            sel_integration = cs4.selectbox("Storage Integration *", integrations,
+                                           key="fi_stg_integration")
+        else:
+            sel_integration = cs4.text_input("Storage Integration *",
+                                            placeholder="my_s3_integration",
+                                            key="fi_stg_int_txt")
+        stg_url = cs5.text_input("Stage URL *",
+                                 placeholder="s3://bucket/path/ or azure://...",
+                                 key="fi_stg_url")
+
+        if st.button("Create External Stage", type="primary",
+                     use_container_width=True, key="fi_create_stg"):
+            if not new_stg_name.strip() or not stg_url.strip() or not sel_integration:
+                st.error("All fields are required.")
+            else:
                 fqn = f"{new_stg_db.strip()}.{new_stg_schema.strip()}.{new_stg_name.strip().upper()}"
+                ddl = (
+                    f"CREATE STAGE IF NOT EXISTS {fqn}\n"
+                    f"  STORAGE_INTEGRATION = {sel_integration}\n"
+                    f"  URL = '{stg_url.strip()}';"
+                )
+                st.code(ddl, language="sql")
                 try:
-                    cur.execute(f"CREATE STAGE IF NOT EXISTS {fqn}")
+                    cur.execute(f"CREATE DATABASE IF NOT EXISTS {new_stg_db.strip()}")
+                    cur.execute(f"CREATE SCHEMA IF NOT EXISTS {new_stg_db.strip()}.{new_stg_schema.strip()}")
+                    cur.execute(ddl)
                     conn.commit()
-                    st.success(f"Stage `{fqn}` created successfully!")
+                    st.success(f"Stage `{fqn}` created!")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Failed to create stage: {e}")
-            else:
-                st.error("Stage Name is required.")
+                    st.error(f"Failed: {e}")
         _sce()
 
     # ── Tab 5: Run History ────────────────────────────────────────────────────
@@ -921,7 +953,6 @@ def render(conn):
             empty_state("", "No Run History",
                         "Run an ingestion job to see results here.")
         else:
-            # Summary
             ok = sum(1 for l in logs if l.get("STATUS") == "success")
             fail = sum(1 for l in logs if l.get("STATUS") == "failed")
             total_rows = sum(int(l.get("ROWS_LOADED") or 0) for l in logs
@@ -941,13 +972,11 @@ def render(conn):
             df = pd.DataFrame(logs)
             available = [c for c in display_cols if c in df.columns]
 
-            # Paginate history
             HIST_PER_PAGE = 15
             total_hist = len(df)
             total_hist_pages = max(1, (total_hist + HIST_PER_PAGE - 1) // HIST_PER_PAGE)
             hist_page = st.session_state.get("fi_hist_page", 0)
             hist_page = min(hist_page, total_hist_pages - 1)
-
             start_h = hist_page * HIST_PER_PAGE
             end_h = min(start_h + HIST_PER_PAGE, total_hist)
 

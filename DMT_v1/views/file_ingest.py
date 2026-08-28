@@ -32,11 +32,12 @@ def render(conn):
     cur = conn.cursor()
 
     # Tabs
-    tab_jobs, tab_add, tab_upload, tab_stages, tab_history = st.tabs([
-        "Active Jobs", "Add / Edit Job", "Upload & Ingest", "Stages & Integrations", "Run History"
+    tab_jobs, tab_run, tab_add, tab_upload, tab_stages, tab_history = st.tabs([
+        "Active Jobs", "Run Jobs", "Add / Edit Job", "Upload & Ingest",
+        "Stages & Integrations", "Run History"
     ])
 
-    # ── Tab 1: Active Jobs ────────────────────────────────────────────────────
+    # ── Tab 1: Active Jobs (list only) ────────────────────────────────────────
     with tab_jobs:
         configs = file_ingest_config.list_configs(cur, active_only=False)
 
@@ -55,55 +56,6 @@ def render(conn):
             c1.metric("Active Jobs", len(active))
             c2.metric("Last Run OK", last_ok)
             c3.metric("Last Run Failed", last_fail)
-
-            # ── Run Controls (styled card) ────────────────────────────────────
-            from utils.ui_theme import section_card_start as _scs2, section_card_end as _sce2
-            _scs2("Run Ingestion", "▶️", border_color="#34D058")
-
-            run_mode = st.radio(
-                "Execution Mode",
-                ["Run All Active", "Run Single Job"],
-                horizontal=True, key="fi_run_mode")
-
-            if run_mode == "Run All Active":
-                st.caption(f"Runs all {len(active)} active job(s) sequentially.")
-                if st.button("Run All Active Jobs", type="primary",
-                             use_container_width=True, key="fi_run_all"):
-                    with st.spinner("Running all active ingestion jobs..."):
-                        from core.file_ingester import run_all
-                        results = run_all(conn)
-                        for r in results:
-                            status = r.get("STATUS", "?")
-                            icon = {"success": "✅", "failed": "❌",
-                                    "skipped": "⏭️"}.get(status, "⏳")
-                            st.write(f"{icon} **{r.get('JOB_NAME')}**: "
-                                     f"{int(r.get('ROWS_LOADED') or 0):,} rows")
-                        st.rerun()
-            else:
-                job_names = [c["JOB_NAME"] for c in active]
-                if job_names:
-                    sel_job = st.selectbox(
-                        "Select job", job_names, key="fi_run_single_sel")
-                    if st.button(f"Run '{sel_job}'", type="primary",
-                                 use_container_width=True, key="fi_run_single_btn"):
-                        with st.spinner(f"Running {sel_job}..."):
-                            from core.file_ingester import run_all
-                            results = run_all(conn, only_job=sel_job)
-                            if results:
-                                r = results[0]
-                                if r["STATUS"] == "success":
-                                    st.success(
-                                        f"Loaded {int(r.get('ROWS_LOADED') or 0):,} rows "
-                                        f"from {int(r.get('FILES_LOADED') or 0)} file(s)")
-                                elif r["STATUS"] == "skipped":
-                                    st.warning(r.get("ERROR_MESSAGE", "Skipped"))
-                                else:
-                                    st.error(r.get("ERROR_MESSAGE", "Failed"))
-                            st.rerun()
-                else:
-                    st.info("No active jobs to run. Activate a job first.")
-
-            _sce2()
 
             st.markdown("<br>", unsafe_allow_html=True)
 
@@ -234,7 +186,85 @@ def render(conn):
                     except Exception as e:
                         st.warning(f"Cannot list stage: {e}")
 
-    # ── Tab 2: Add / Edit Job ─────────────────────────────────────────────────
+    # ── Tab 2: Run Jobs ───────────────────────────────────────────────────────
+    with tab_run:
+        configs_run = file_ingest_config.list_configs(cur, active_only=False)
+        active_run = [c for c in configs_run if c.get("ACTIVE")]
+
+        if not active_run:
+            empty_state("", "No Active Jobs",
+                        "Activate jobs in the <b>Active Jobs</b> tab first.")
+        else:
+            from utils.ui_theme import section_card_start as _scs2, section_card_end as _sce2
+            _scs2("Run Ingestion", "▶️", border_color="#34D058")
+
+            # Display last run result (persists across reruns)
+            if "fi_last_run_result" in st.session_state:
+                lr = st.session_state.pop("fi_last_run_result")
+                if lr["type"] == "success":
+                    st.success(lr["msg"])
+                elif lr["type"] == "warning":
+                    st.warning(lr["msg"])
+                elif lr["type"] == "error":
+                    st.error(lr["msg"])
+                elif lr["type"] == "multi":
+                    for item in lr["items"]:
+                        st.write(item)
+
+            run_mode = st.radio(
+                "Execution Mode",
+                ["Run All Active", "Run Single Job"],
+                horizontal=True, key="fi_run_mode")
+
+            if run_mode == "Run All Active":
+                st.caption(f"Runs all {len(active_run)} active job(s) sequentially.")
+                if st.button("Run All Active Jobs", type="primary",
+                             use_container_width=True, key="fi_run_all"):
+                    with st.spinner("Running all active ingestion jobs..."):
+                        from core.file_ingester import run_all
+                        results = run_all(conn)
+                        items = []
+                        for r in results:
+                            status = r.get("STATUS", "?")
+                            icon = {"success": "✅", "failed": "❌",
+                                    "skipped": "⏭️"}.get(status, "⏳")
+                            msg = (f"{icon} **{r.get('JOB_NAME')}**: "
+                                   f"{int(r.get('ROWS_LOADED') or 0):,} rows")
+                            if status == "failed":
+                                msg += f" — {r.get('ERROR_MESSAGE', '')}"
+                            items.append(msg)
+                        st.session_state["fi_last_run_result"] = {
+                            "type": "multi", "items": items}
+                        st.rerun()
+            else:
+                job_names = [c["JOB_NAME"] for c in active_run]
+                sel_job = st.selectbox(
+                    "Select job", job_names, key="fi_run_single_sel")
+                if st.button(f"Run '{sel_job}'", type="primary",
+                             use_container_width=True, key="fi_run_single_btn"):
+                    with st.spinner(f"Running {sel_job}..."):
+                        from core.file_ingester import run_all
+                        results = run_all(conn, only_job=sel_job)
+                        if results:
+                            r = results[0]
+                            if r["STATUS"] == "success":
+                                st.session_state["fi_last_run_result"] = {
+                                    "type": "success",
+                                    "msg": (f"✅ Loaded {int(r.get('ROWS_LOADED') or 0):,} rows "
+                                            f"from {int(r.get('FILES_LOADED') or 0)} file(s)")}
+                            elif r["STATUS"] == "skipped":
+                                st.session_state["fi_last_run_result"] = {
+                                    "type": "warning",
+                                    "msg": f"⏭️ {r.get('ERROR_MESSAGE', 'Skipped')}"}
+                            else:
+                                st.session_state["fi_last_run_result"] = {
+                                    "type": "error",
+                                    "msg": f"❌ {r.get('ERROR_MESSAGE', 'Failed')}"}
+                        st.rerun()
+
+            _sce2()
+
+    # ── Tab 3: Add / Edit Job ─────────────────────────────────────────────────
     with tab_add:
         from utils.ui_theme import (section_card_start, section_card_end,
                                     info_box, ST_PENDING, ST_SUCCESS, TA_ORANGE,

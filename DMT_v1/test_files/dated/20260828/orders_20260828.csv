@@ -1,0 +1,5 @@
+id,order_id,customer,amount,order_date
+4,ORD-1004,David,450.0,2026-08-28
+5,ORD-1005,Eva,89.99,2026-08-28
+6,ORD-1006,Frank,1250.0,2026-08-28
+7,ORD-1007,Grace,67.5,2026-08-28

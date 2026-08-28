@@ -32,8 +32,8 @@ def render(conn):
     cur = conn.cursor()
 
     # Tabs
-    tab_jobs, tab_add, tab_history = st.tabs([
-        "Active Jobs", "Add / Edit Job", "Run History"
+    tab_jobs, tab_add, tab_upload, tab_history = st.tabs([
+        "Active Jobs", "Add / Edit Job", "Upload & Ingest", "Run History"
     ])
 
     # ── Tab 1: Active Jobs ────────────────────────────────────────────────────
@@ -96,14 +96,122 @@ def render(conn):
 
             st.markdown("<br>", unsafe_allow_html=True)
 
-            # Job table
-            display_cols = ["JOB_NAME", "FILE_TYPE", "STAGE_NAME", "CLOUD_PATH",
-                            "FILE_PATTERN", "TARGET_TABLE", "LOAD_MODE",
-                            "ACTIVE", "LAST_RUN_STATUS", "LAST_ROW_COUNT",
-                            "LAST_RUN_AT"]
-            df = pd.DataFrame(configs)
-            available = [c for c in display_cols if c in df.columns]
-            st.dataframe(df[available], use_container_width=True, hide_index=True)
+            # Job table with action buttons (paginated)
+            JOBS_PER_PAGE = 10
+            total_jobs = len(configs)
+            total_job_pages = max(1, (total_jobs + JOBS_PER_PAGE - 1) // JOBS_PER_PAGE)
+            job_page = st.session_state.get("fi_job_page", 0)
+            job_page = min(job_page, total_job_pages - 1)
+
+            start_j = job_page * JOBS_PER_PAGE
+            end_j = min(start_j + JOBS_PER_PAGE, total_jobs)
+            page_configs = configs[start_j:end_j]
+
+            for cfg in page_configs:
+                status_color = (ST_SUCCESS if cfg.get("LAST_RUN_STATUS") == "success"
+                                else ST_FAILED if cfg.get("LAST_RUN_STATUS") == "failed"
+                                else TXT_LABEL)
+                with st.expander(
+                    f"{'🟢' if cfg.get('ACTIVE') else '⚫'} **{cfg['JOB_NAME']}** "
+                    f"— {cfg.get('FILE_TYPE', '?')} → {cfg.get('TARGET_TABLE', '?')} "
+                    f"({cfg.get('LOAD_MODE', 'APPEND')})", expanded=False):
+                    c_info, c_actions = st.columns([3, 1])
+                    with c_info:
+                        st.caption(
+                            f"Stage: `{cfg.get('STAGE_NAME', '')}/{cfg.get('CLOUD_PATH', '')}` · "
+                            f"Pattern: `{cfg.get('FILE_PATTERN', '')}` · "
+                            f"Last: {cfg.get('LAST_ROW_COUNT', 0):,} rows at {cfg.get('LAST_RUN_AT', 'never')}")
+                    with c_actions:
+                        a1, a2 = st.columns(2)
+                        if cfg.get("ACTIVE"):
+                            if a1.button("⏸ Deactivate", key=f"deact_{cfg['CONFIG_ID']}",
+                                         use_container_width=True):
+                                file_ingest_config.deactivate(cur, cfg["CONFIG_ID"])
+                                conn.commit()
+                                st.rerun()
+                        else:
+                            if a1.button("▶ Activate", key=f"act_{cfg['CONFIG_ID']}",
+                                         use_container_width=True):
+                                file_ingest_config.activate(cur, cfg["CONFIG_ID"])
+                                conn.commit()
+                                st.rerun()
+                        if a2.button("🗑️ Delete", key=f"del_{cfg['CONFIG_ID']}",
+                                     use_container_width=True):
+                            file_ingest_config.delete_config(cur, cfg["CONFIG_ID"])
+                            conn.commit()
+                            st.rerun()
+
+            # Jobs pagination controls
+            if total_job_pages > 1:
+                jp1, jp2, jp3 = st.columns([1, 2, 1])
+                jp1.button("◀ Prev", key="fi_job_prev",
+                           disabled=(job_page == 0),
+                           on_click=lambda: st.session_state.update(fi_job_page=job_page - 1))
+                jp2.markdown(
+                    f"<div style='text-align:center;padding-top:6px;color:{TXT_LABEL}'>"
+                    f"Page {job_page + 1} of {total_job_pages} ({total_jobs} jobs)</div>",
+                    unsafe_allow_html=True)
+                jp3.button("Next ▶", key="fi_job_next",
+                           disabled=(job_page >= total_job_pages - 1),
+                           on_click=lambda: st.session_state.update(fi_job_page=job_page + 1))
+
+            # ── Stage File Browser ───────────────────────────────────────────
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("#### Stage File Browser")
+            st.caption("View files currently on a stage for any configured job.")
+
+            browse_jobs = [c["JOB_NAME"] for c in configs if c.get("STAGE_NAME")]
+            if browse_jobs:
+                browse_sel = st.selectbox("Select job to browse stage",
+                                         [""] + browse_jobs, key="fi_browse_sel")
+                if browse_sel:
+                    browse_cfg = next(c for c in configs if c["JOB_NAME"] == browse_sel)
+                    stage_name = browse_cfg.get("STAGE_NAME", "")
+                    cloud_path = (browse_cfg.get("CLOUD_PATH") or "").strip("/")
+                    browse_path = f"@{stage_name}/{cloud_path}/" if cloud_path else f"@{stage_name}/"
+
+                    try:
+                        cur.execute(f"LIST {browse_path}")
+                        list_results = cur.fetchall()
+                        list_cols = [d[0] for d in cur.description]
+
+                        if list_results:
+                            list_df = pd.DataFrame(list_results, columns=list_cols)
+                            show_cols = [c for c in ["name", "size", "last_modified"]
+                                        if c in list_df.columns]
+                            display_df = list_df[show_cols] if show_cols else list_df
+
+                            # Paginate stage files
+                            FILES_PER_PAGE = 20
+                            total_files = len(display_df)
+                            total_file_pages = max(1, (total_files + FILES_PER_PAGE - 1) // FILES_PER_PAGE)
+                            file_page = st.session_state.get("fi_file_page", 0)
+                            file_page = min(file_page, total_file_pages - 1)
+
+                            start_f = file_page * FILES_PER_PAGE
+                            end_f = min(start_f + FILES_PER_PAGE, total_files)
+
+                            st.dataframe(display_df.iloc[start_f:end_f],
+                                        use_container_width=True, hide_index=True)
+                            st.caption(f"Showing {start_f + 1}–{end_f} of "
+                                       f"{total_files} file(s) on `{browse_path}`")
+
+                            if total_file_pages > 1:
+                                fp1, fp2, fp3 = st.columns([1, 2, 1])
+                                fp1.button("◀ Prev", key="fi_file_prev",
+                                           disabled=(file_page == 0),
+                                           on_click=lambda: st.session_state.update(fi_file_page=file_page - 1))
+                                fp2.markdown(
+                                    f"<div style='text-align:center;padding-top:6px;color:{TXT_LABEL}'>"
+                                    f"Page {file_page + 1} of {total_file_pages}</div>",
+                                    unsafe_allow_html=True)
+                                fp3.button("Next ▶", key="fi_file_next",
+                                           disabled=(file_page >= total_file_pages - 1),
+                                           on_click=lambda: st.session_state.update(fi_file_page=file_page + 1))
+                        else:
+                            st.info(f"No files found on `{browse_path}`")
+                    except Exception as e:
+                        st.warning(f"Cannot list stage: {e}")
 
     # ── Tab 2: Add / Edit Job ─────────────────────────────────────────────────
     with tab_add:
@@ -161,8 +269,21 @@ def render(conn):
                 index=["CSV", "PARQUET", "JSON", "AVRO"].index(
                     editing.get("FILE_TYPE", "CSV")) if editing else 0)
             date_partition = s6.checkbox(
-                "Date-partitioned path (append YYYYMMDD)",
+                "Date-partitioned path",
                 value=editing.get("DATE_PARTITION", False) if editing else False)
+
+            # Date format (shown only when date partition is enabled)
+            date_format = ""
+            if date_partition:
+                date_format = st.text_input(
+                    "Date Format (Python strftime)",
+                    value=editing.get("DATE_FORMAT", "%Y%m%d") if editing else "%Y%m%d",
+                    placeholder="%Y%m%d or %Y/%m/%d",
+                    help="Format for date subfolder: %Y=year, %m=month, %d=day. "
+                         "E.g. %Y%m%d → 20260826, %Y/%m/%d → 2026/08/26")
+
+            # MERGE keys (shown only when load mode is MERGE)
+            merge_keys_input = ""
 
             st.markdown("---")
             st.markdown("**Target (Snowflake)**")
@@ -189,6 +310,13 @@ def render(conn):
                 "Table already exists",
                 value=editing.get("TABLE_EXISTS", True) if editing else True,
                 help="Uncheck to auto-create table from file schema")
+
+            if load_mode == "MERGE":
+                merge_keys_input = st.text_input(
+                    "Merge Keys (comma-separated) *",
+                    value=editing.get("MERGE_KEYS", "") if editing else "",
+                    placeholder="e.g. ID, CUSTOMER_ID",
+                    help="Primary key column(s) for MERGE deduplication")
 
             st.markdown("---")
             st.markdown("**Format Options** (CSV)")
@@ -231,6 +359,8 @@ def render(conn):
             if submitted:
                 if not job_name or not stage_name or not file_pattern or not target_db or not target_table:
                     st.error("Please fill all required fields (marked with *)")
+                elif load_mode == "MERGE" and not merge_keys_input.strip():
+                    st.error("MERGE mode requires Merge Keys to be specified.")
                 else:
                     save_data = {
                         "JOB_NAME": job_name.strip(),
@@ -253,6 +383,8 @@ def render(conn):
                         "MATCH_BY_COLUMN_NAME": match_by or None,
                         "PURGE_FILES": purge,
                         "DATE_PARTITION": date_partition,
+                        "DATE_FORMAT": date_format.strip() or None,
+                        "MERGE_KEYS": merge_keys_input.strip() or None,
                     }
                     if editing:
                         save_data["CONFIG_ID"] = editing["CONFIG_ID"]
@@ -261,7 +393,247 @@ def render(conn):
                     st.success(f"Job '{job_name}' saved successfully!")
                     st.rerun()
 
-    # ── Tab 3: Run History ────────────────────────────────────────────────────
+    # ── Tab 3: Upload & Ingest ─────────────────────────────────────────────────
+    with tab_upload:
+        st.markdown("#### Upload Files to Snowflake Stage")
+        st.caption("Upload local files directly into a Snowflake internal stage, "
+                   "then load them into a target table. No cloud storage needed.")
+
+        _UPLOAD_STAGE = "HISTLOAD_DB.META.DMT_UPLOAD_STAGE"
+
+        # Ensure stage exists
+        try:
+            cur.execute(f"CREATE STAGE IF NOT EXISTS {_UPLOAD_STAGE}")
+        except Exception:
+            pass
+
+        # File uploader
+        uploaded_files = st.file_uploader(
+            "Drop files here (max 200MB per file)",
+            type=["csv", "tsv", "parquet", "json", "avro", "txt", "gz"],
+            accept_multiple_files=True,
+            key="fi_upload")
+
+        if uploaded_files:
+            st.info(f"{len(uploaded_files)} file(s) selected: "
+                    f"{', '.join(f.name for f in uploaded_files[:5])}"
+                    f"{'...' if len(uploaded_files) > 5 else ''}")
+
+            # ── Auto-detect file type from extension ─────────────────────────
+            first_file = uploaded_files[0]
+            ext = first_file.name.rsplit(".", 1)[-1].lower() if "." in first_file.name else ""
+            # Handle .gz (look at second extension)
+            if ext == "gz" and first_file.name.count(".") >= 2:
+                ext = first_file.name.rsplit(".", 2)[-2].lower()
+
+            auto_type_map = {"csv": "CSV", "tsv": "CSV", "txt": "CSV",
+                             "parquet": "PARQUET", "json": "JSON", "ndjson": "JSON",
+                             "avro": "AVRO"}
+            detected_type = auto_type_map.get(ext, "CSV")
+
+            # ── Auto-suggest table name from filename ────────────────────────
+            import re
+            base_name = first_file.name.rsplit(".", 1)[0] if "." in first_file.name else first_file.name
+            # Remove date patterns, numbers, clean to valid identifier
+            suggested_table = re.sub(r'[\d_-]{6,}', '', base_name)  # strip date-like
+            suggested_table = re.sub(r'[^a-zA-Z0-9_]', '_', suggested_table)  # clean
+            suggested_table = re.sub(r'_+', '_', suggested_table).strip('_').upper()
+            if not suggested_table:
+                suggested_table = "UPLOADED_DATA"
+
+            # ── File Preview ─────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("**File Preview** (first 5 rows)")
+            try:
+                if detected_type == "CSV":
+                    import io
+                    content = first_file.read().decode("utf-8", errors="replace")
+                    first_file.seek(0)  # reset for later PUT
+                    preview_df = pd.read_csv(io.StringIO(content), nrows=5)
+                    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+                    st.caption(f"Detected: **{len(preview_df.columns)} columns**, "
+                               f"delimiter=`,` — {first_file.name}")
+                elif detected_type == "PARQUET":
+                    import pyarrow.parquet as pq
+                    import io
+                    pf = pq.read_table(io.BytesIO(first_file.read())).to_pandas()
+                    first_file.seek(0)
+                    st.dataframe(pf.head(5), use_container_width=True, hide_index=True)
+                    st.caption(f"Detected: **{len(pf.columns)} columns** — {first_file.name}")
+                elif detected_type == "JSON":
+                    import io, json as _json
+                    content = first_file.read().decode("utf-8", errors="replace")
+                    first_file.seek(0)
+                    # Try array or newline-delimited
+                    try:
+                        data = _json.loads(content)
+                        if isinstance(data, list):
+                            preview_df = pd.DataFrame(data[:5])
+                        else:
+                            preview_df = pd.DataFrame([data])
+                    except _json.JSONDecodeError:
+                        lines = [_json.loads(l) for l in content.strip().split("\n")[:5] if l.strip()]
+                        preview_df = pd.DataFrame(lines)
+                    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+                    st.caption(f"Detected: **{len(preview_df.columns)} columns** — {first_file.name}")
+                else:
+                    st.caption("Preview not available for Avro files")
+            except Exception as prev_err:
+                st.warning(f"Preview failed: {prev_err}")
+
+            # ── Target config ────────────────────────────────────────────────
+            st.markdown("---")
+            st.markdown("**Load Settings**")
+            u1, u2, u3 = st.columns(3)
+            upload_target_db = u1.text_input("Target Database",
+                                            value="HISTLOAD_DB", key="up_tgt_db")
+            upload_target_schema = u2.text_input("Target Schema",
+                                                value="RAW", key="up_tgt_schema")
+            upload_target_table = u3.text_input("Target Table",
+                                               value=suggested_table,
+                                               key="up_tgt_table")
+
+            u4, u5, u6 = st.columns(3)
+            type_options = ["CSV", "PARQUET", "JSON", "AVRO"]
+            upload_file_type = u4.selectbox("File Type", type_options,
+                                           index=type_options.index(detected_type),
+                                           key="up_ftype")
+            upload_load_mode = u5.selectbox("Load Mode",
+                                           ["APPEND", "OVERWRITE"], key="up_lmode")
+            upload_auto_create = u6.checkbox("Auto-create table",
+                                            value=True, key="up_auto_create")
+
+            # Schema preview for existing tables
+            if not upload_auto_create and upload_target_table.strip():
+                try:
+                    tgt_fqn = (f"{upload_target_db.strip().upper()}."
+                               f"{upload_target_schema.strip().upper()}."
+                               f"{upload_target_table.strip().upper()}")
+                    cur.execute(f"SHOW COLUMNS IN TABLE {tgt_fqn}")
+                    tgt_cols = cur.fetchall()
+                    if tgt_cols:
+                        col_name_idx = next(i for i, d in enumerate(cur.description)
+                                           if d[0] == "column_name")
+                        col_type_idx = next(i for i, d in enumerate(cur.description)
+                                           if d[0] == "data_type")
+                        st.markdown("**Target Table Schema:**")
+                        schema_data = [{"Column": r[col_name_idx].strip('"'),
+                                       "Type": r[col_type_idx]}
+                                      for r in tgt_cols]
+                        st.dataframe(pd.DataFrame(schema_data),
+                                    use_container_width=True, hide_index=True)
+                except Exception:
+                    pass
+
+            # CSV options (shown only for CSV)
+            if upload_file_type == "CSV":
+                uc1, uc2, uc3 = st.columns(3)
+                up_delimiter = uc1.text_input("Delimiter", value=",", key="up_delim")
+                up_enclosed = uc2.text_input("Enclosed By", value='"', key="up_enc")
+                up_skip = uc3.number_input("Skip Header", value=1, min_value=0,
+                                           max_value=10, key="up_skip")
+            else:
+                up_delimiter = ","
+                up_enclosed = '"'
+                up_skip = 0
+
+            # Upload & Load button
+            st.markdown("---")
+            if st.button("Upload & Load", type="primary",
+                         use_container_width=True, key="up_go"):
+                if not upload_target_table.strip():
+                    st.error("Target Table is required.")
+                else:
+                    import tempfile
+                    import os
+
+                    upload_path = f"upload/{upload_target_table.strip().lower()}"
+                    loaded_files = []
+                    progress = st.progress(0, text="Uploading files...")
+
+                    for idx, uf in enumerate(uploaded_files):
+                        # Write to temp file, then PUT to stage
+                        with tempfile.NamedTemporaryFile(
+                                delete=False, suffix=f"_{uf.name}") as tmp:
+                            tmp.write(uf.getbuffer())
+                            tmp_path = tmp.name
+
+                        try:
+                            put_sql = (
+                                f"PUT 'file://{tmp_path}' "
+                                f"@{_UPLOAD_STAGE}/{upload_path}/ "
+                                f"AUTO_COMPRESS = FALSE OVERWRITE = TRUE")
+                            cur.execute(put_sql)
+                            loaded_files.append(uf.name)
+                        except Exception as e:
+                            st.error(f"PUT failed for {uf.name}: {e}")
+                        finally:
+                            os.unlink(tmp_path)
+
+                        progress.progress((idx + 1) / len(uploaded_files),
+                                         text=f"Uploaded {idx + 1}/{len(uploaded_files)}: {uf.name}")
+
+                    progress.empty()
+
+                    if loaded_files:
+                        st.success(f"Uploaded {len(loaded_files)} file(s) to stage")
+
+                        # Build file extension pattern
+                        ftype = upload_file_type.lower()
+                        if ftype == "csv":
+                            pattern = ".*\\.(csv|tsv|txt).*"
+                        elif ftype == "parquet":
+                            pattern = ".*\\.parquet.*"
+                        elif ftype == "json":
+                            pattern = ".*\\.(json|ndjson).*"
+                        else:
+                            pattern = ".*\\.avro.*"
+
+                        # Run ingestion
+                        with st.spinner("Loading into Snowflake..."):
+                            from core.file_ingester import run_ingestion
+                            ingest_config = {
+                                "CONFIG_ID": f"upload_{upload_target_table.strip().lower()}",
+                                "JOB_NAME": f"upload_{upload_target_table.strip().lower()}",
+                                "STAGE_NAME": _UPLOAD_STAGE,
+                                "CLOUD_PATH": upload_path,
+                                "FILE_PATTERN": pattern,
+                                "FILE_TYPE": upload_file_type,
+                                "TARGET_DB": upload_target_db.strip().upper(),
+                                "TARGET_SCHEMA": upload_target_schema.strip().upper(),
+                                "TARGET_TABLE": upload_target_table.strip().upper(),
+                                "TABLE_EXISTS": not upload_auto_create,
+                                "LOAD_MODE": upload_load_mode,
+                                "FIELD_DELIMITER": up_delimiter,
+                                "FIELD_ENCLOSED_BY": up_enclosed,
+                                "SKIP_HEADER": int(up_skip),
+                                "ON_ERROR": "ABORT_STATEMENT",
+                            }
+                            result = run_ingestion(conn, ingest_config)
+
+                        if result["STATUS"] == "success":
+                            st.success(
+                                f"Loaded **{result.get('ROWS_LOADED', 0):,}** rows "
+                                f"from {result.get('FILES_LOADED', 0)} file(s) into "
+                                f"`{upload_target_db.strip().upper()}."
+                                f"{upload_target_schema.strip().upper()}."
+                                f"{upload_target_table.strip().upper()}`")
+                            st.balloons()
+                        elif result["STATUS"] == "skipped":
+                            st.warning(f"Skipped: {result.get('ERROR_MESSAGE', '?')}")
+                        else:
+                            st.error(f"Failed: {result.get('ERROR_MESSAGE', '?')}")
+
+        else:
+            st.markdown(
+                '<div style="text-align:center;padding:40px;color:#7E96B0;">'
+                '<div style="font-size:3rem;">📁</div>'
+                '<div style="margin-top:8px;">Drop CSV, Parquet, JSON, or Avro files above</div>'
+                '<div style="font-size:0.8rem;margin-top:4px;">'
+                'Files are uploaded to an internal Snowflake stage — no cloud storage needed'
+                '</div></div>', unsafe_allow_html=True)
+
+    # ── Tab 4: Run History ────────────────────────────────────────────────────
     with tab_history:
         logs = file_ingest_config.get_recent_logs(cur, limit=100)
 
@@ -288,6 +660,32 @@ def render(conn):
                             "RUN_START"]
             df = pd.DataFrame(logs)
             available = [c for c in display_cols if c in df.columns]
-            st.dataframe(df[available], use_container_width=True, hide_index=True)
+
+            # Paginate history
+            HIST_PER_PAGE = 15
+            total_hist = len(df)
+            total_hist_pages = max(1, (total_hist + HIST_PER_PAGE - 1) // HIST_PER_PAGE)
+            hist_page = st.session_state.get("fi_hist_page", 0)
+            hist_page = min(hist_page, total_hist_pages - 1)
+
+            start_h = hist_page * HIST_PER_PAGE
+            end_h = min(start_h + HIST_PER_PAGE, total_hist)
+
+            st.dataframe(df[available].iloc[start_h:end_h],
+                         use_container_width=True, hide_index=True)
+
+            if total_hist_pages > 1:
+                hp1, hp2, hp3 = st.columns([1, 2, 1])
+                hp1.button("◀ Prev", key="fi_hist_prev",
+                           disabled=(hist_page == 0),
+                           on_click=lambda: st.session_state.update(fi_hist_page=hist_page - 1))
+                hp2.markdown(
+                    f"<div style='text-align:center;padding-top:6px;color:{TXT_LABEL}'>"
+                    f"Page {hist_page + 1} of {total_hist_pages} "
+                    f"({total_hist} runs)</div>",
+                    unsafe_allow_html=True)
+                hp3.button("Next ▶", key="fi_hist_next",
+                           disabled=(hist_page >= total_hist_pages - 1),
+                           on_click=lambda: st.session_state.update(fi_hist_page=hist_page + 1))
 
     cur.close()

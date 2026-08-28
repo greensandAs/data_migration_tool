@@ -210,9 +210,12 @@ def _render_run_logs(cur, conn):
 # Tab 2: Health Dashboard
 # ══════════════════════════════════════════════════════════════════════════════
 def _render_health(cur):
-    hours = st.selectbox("Alert Window", [12, 24, 48, 72],
-                         index=1, key="obs_health_hours",
-                         format_func=lambda h: f"Last {h} hours")
+    TIME_OPTIONS = ["12h", "24h", "48h", "72h"]
+    _hours_map = {"12h": 12, "24h": 24, "48h": 48, "72h": 72}
+    selected_window = st.radio(
+        "Alert Window", TIME_OPTIONS, index=1, horizontal=True,
+        label_visibility="collapsed", key="obs_health_window")
+    hours = _hours_map[selected_window]
 
     failed_df = _query_safe(cur, f"""
         SELECT BATCH_ID, SOURCE_DB, SOURCE_TABLE, TARGET_TABLE, LOAD_TYPE,

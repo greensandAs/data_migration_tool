@@ -1,10 +1,2 @@
 .env
-DMT_v1/.env
-__pycache__/
-*.py[cod]
 
-# Python virtual environments
-.venv/
-venv/
-env/
-ENV/

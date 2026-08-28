@@ -1,6 +1,0 @@
-# Tiger Analytics — Streamlit Theme Configuration
-# PRIMARY THEMING is handled by CSS injection in app.py.
-# This file only sets primaryColor for widget accents (slider thumbs, checkboxes).
-
-[theme]
-primaryColor = "#F15A22"

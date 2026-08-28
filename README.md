@@ -123,4 +123,4 @@ Proprietary — Tiger Analytics. Internal use only.
 
 ---
 
-*MigrateX v1.0 — Powered by Tiger Analytics · Developed by MDP*
+*MigrateX v1.0 — Powered by Tiger Analytics · Developed by Aslam*

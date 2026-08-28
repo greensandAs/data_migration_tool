@@ -472,8 +472,7 @@ def render_header():
         f'</div>'
         f'</div></div>', unsafe_allow_html=True)
 
-    # ── Source selector row + AI toggle (single compact line) ────────────────
-    # Fetch profiles
+    # ── Source selector + AI (single row) ────────────────────────────────────
     if "_profiles_list" not in st.session_state:
         try:
             _cur = _sf_conn().cursor()
@@ -489,11 +488,11 @@ def render_header():
     if "selected_profile" not in st.session_state:
         st.session_state["selected_profile"] = "All Connections"
 
-    src_col1, src_col2, src_col3, src_col4 = st.columns([1.5, 2.5, 1.5, 1])
-
     _source_types = sorted(set(
         p.get("SOURCE_TYPE", "").lower() for p in _profiles if p.get("SOURCE_TYPE"))) if _profiles else []
     _type_options = ["all"] + _source_types
+
+    src_col1, src_col2, src_col3 = st.columns([1.5, 3, 2])
 
     with src_col1:
         sel_type = st.selectbox(
@@ -501,7 +500,8 @@ def render_header():
             _type_options,
             index=_type_options.index(st.session_state["selected_source_type"])
             if st.session_state["selected_source_type"] in _type_options else 0,
-            format_func=lambda x: "All Types" if x == "all" else x.upper(),
+            format_func=lambda x: f"🔌 All Sources ({len(_profiles)})" if x == "all"
+                else f"🔌 {x.upper()} ({sum(1 for p in _profiles if (p.get('SOURCE_TYPE') or '').lower() == x)})",
             key="hdr_source_type_select", label_visibility="collapsed",
         )
         st.session_state["selected_source_type"] = sel_type
@@ -521,32 +521,27 @@ def render_header():
             _profile_options,
             index=_profile_options.index(st.session_state["selected_profile"])
             if st.session_state["selected_profile"] in _profile_options else 0,
+            format_func=lambda x: f"📡 All Connections ({len(_filtered)})" if x == "All Connections"
+                else f"📡 {x}",
             key="hdr_profile_select", label_visibility="collapsed",
         )
         st.session_state["selected_profile"] = sel_profile
 
     with src_col3:
-        if sel_profile != "All Connections":
-            _sel_p = next((p for p in _filtered if p["PROFILE_NAME"] == sel_profile), None)
-            if _sel_p:
-                st.markdown(
-                    f'<div style="font-size:.68rem;color:{TXT_SECONDARY};padding-top:6px;">'
-                    f'<code>{_sel_p.get("SOURCE_TYPE","?")}</code> · '
-                    f'{_sel_p.get("HOST","?")}:{_sel_p.get("PORT","?")}'
-                    f'</div>', unsafe_allow_html=True)
-
-    with src_col4:
-        st.session_state["_ai_on"] = st.toggle(
-            "🤖 AI", value=st.session_state.get("_ai_on", False),
-            key="header_ai_toggle",
-            help="Enable AI-powered recommendations.")
-        if st.session_state["_ai_on"]:
-            available_models = _get_available_models()
-            default_model = st.session_state.get("_ai_model", AI_MODEL)
-            idx = available_models.index(default_model) if default_model in available_models else 0
-            st.session_state["_ai_model"] = st.selectbox(
-                "Model", available_models, index=idx,
-                key="header_ai_model", label_visibility="collapsed")
+        ai_c1, ai_c2 = st.columns([1, 2])
+        with ai_c1:
+            st.session_state["_ai_on"] = st.toggle(
+                "🤖 AI", value=st.session_state.get("_ai_on", False),
+                key="header_ai_toggle",
+                help="Enable AI-powered recommendations.")
+        with ai_c2:
+            if st.session_state["_ai_on"]:
+                available_models = _get_available_models()
+                default_model = st.session_state.get("_ai_model", AI_MODEL)
+                idx = available_models.index(default_model) if default_model in available_models else 0
+                st.session_state["_ai_model"] = st.selectbox(
+                    "Model", available_models, index=idx,
+                    key="header_ai_model", label_visibility="collapsed")
 
 
 def render_footer():
@@ -623,8 +618,7 @@ with st.sidebar:
             f'<span style="color:{TA_ORANGE};">Migrate</span>X</h4>'
             f'</div>', unsafe_allow_html=True)
 
-    # ── Navigation buttons (grouped) ────────────────────────────────────────────
-    # Group 1: Database Migration (core)
+    # ── Navigation (grouped) ────────────────────────────────────────────────────
     st.markdown(
         f'<div style="font-size:.6rem;letter-spacing:2px;text-transform:uppercase;'
         f'color:{TA_ORANGE};font-weight:700;margin:8px 0 6px 0;">Database Migration</div>',
@@ -641,19 +635,13 @@ with st.sidebar:
     }
     for page_name, icon in NAV_MIGRATION.items():
         is_active = st.session_state.current_page == page_name
-        if is_active:
-            st.markdown(
-                f'<div style="background:{TA_ORANGE}22;border-left:3px solid {TA_ORANGE};'
-                f'padding:6px 10px;margin:2px 0;border-radius:0 6px 6px 0;'
-                f'font-size:.82rem;font-weight:600;color:{TA_ORANGE};">'
-                f'{icon} {page_name}</div>', unsafe_allow_html=True)
-        else:
-            if st.button(f"{icon} {page_name}", key=f"nav_{page_name}",
-                         use_container_width=True, type="secondary"):
+        if st.button(f"{icon} {page_name}", key=f"nav_{page_name}",
+                     use_container_width=True,
+                     type="primary" if is_active else "secondary"):
+            if not is_active:
                 st.session_state.current_page = page_name
                 st.rerun()
 
-    # Group 2: File Ingestion
     st.markdown(
         f'<div style="font-size:.6rem;letter-spacing:2px;text-transform:uppercase;'
         f'color:#58A6FF;font-weight:700;margin:16px 0 6px 0;">File Ingestion</div>',
@@ -665,15 +653,10 @@ with st.sidebar:
     }
     for page_name, icon in NAV_FILE.items():
         is_active = st.session_state.current_page == page_name
-        if is_active:
-            st.markdown(
-                f'<div style="background:#58A6FF22;border-left:3px solid #58A6FF;'
-                f'padding:6px 10px;margin:2px 0;border-radius:0 6px 6px 0;'
-                f'font-size:.82rem;font-weight:600;color:#58A6FF;">'
-                f'{icon} {page_name}</div>', unsafe_allow_html=True)
-        else:
-            if st.button(f"{icon} {page_name}", key=f"nav_{page_name}",
-                         use_container_width=True, type="secondary"):
+        if st.button(f"{icon} {page_name}", key=f"nav_{page_name}",
+                     use_container_width=True,
+                     type="primary" if is_active else "secondary"):
+            if not is_active:
                 st.session_state.current_page = page_name
                 st.rerun()
 

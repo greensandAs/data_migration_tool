@@ -39,7 +39,8 @@ def _query_safe(cur, sql: str, params=None) -> pd.DataFrame:
 
 
 def _parse_hours(window: str) -> int:
-    mapping = {"7d": 168, "4d": 96, "3d": 72, "2d": 48, "24hrs": 24, "8hrs": 8, "2hrs": 2}
+    mapping = {"7d": 168, "4d": 96, "3d": 72, "2d": 48, "24h": 24, "8h": 8, "2h": 2,
+               "12h": 12, "48h": 48 * 1, "72h": 72}
     return mapping.get(window, 168)
 
 
@@ -51,14 +52,14 @@ def _render_run_logs(cur, conn):
     profile_filter = None if _profile == "All Connections" else _profile
 
     # Controls
-    TIME_OPTIONS = ["7d", "4d", "3d", "2d", "24hrs", "8hrs", "2hrs"]
-    c1, c2 = st.columns([1, 5])
-    if c1.button("🔄 Refresh", use_container_width=True, key="obs_refresh"):
+    TIME_OPTIONS = ["7d", "4d", "3d", "2d", "24h", "8h", "2h"]
+    c1, c2 = st.columns([5, 1])
+    selected_window = c1.segmented_control(
+        "Time Window", TIME_OPTIONS, default="7d", key="obs_time_window") or "7d"
+    if c2.button("🔄", key="obs_refresh", help="Refresh data"):
         for k in [k for k in st.session_state if k.startswith("_obs_hist_")]:
             del st.session_state[k]
-    selected_window = c2.radio(
-        "Time window", TIME_OPTIONS, index=0, horizontal=True,
-        label_visibility="collapsed", key="obs_time_window")
+        st.rerun()
 
     # Fetch
     hours = _parse_hours(selected_window)
@@ -211,11 +212,12 @@ def _render_run_logs(cur, conn):
 # ══════════════════════════════════════════════════════════════════════════════
 def _render_health(cur):
     TIME_OPTIONS = ["12h", "24h", "48h", "72h"]
-    _hours_map = {"12h": 12, "24h": 24, "48h": 48, "72h": 72}
-    selected_window = st.radio(
-        "Alert Window", TIME_OPTIONS, index=1, horizontal=True,
-        label_visibility="collapsed", key="obs_health_window")
-    hours = _hours_map[selected_window]
+    c1, c2 = st.columns([5, 1])
+    selected_window = c1.segmented_control(
+        "Alert Window", TIME_OPTIONS, default="24h", key="obs_health_window") or "24h"
+    if c2.button("🔄", key="obs_health_refresh", help="Refresh"):
+        st.rerun()
+    hours = _parse_hours(selected_window)
 
     failed_df = _query_safe(cur, f"""
         SELECT BATCH_ID, SOURCE_DB, SOURCE_TABLE, TARGET_TABLE, LOAD_TYPE,

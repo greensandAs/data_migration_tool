@@ -589,12 +589,12 @@ live_running_panel = (_fragment(run_every=1.0)(_render_running_panel)
 
 def _render_help(conn):
     """Render the User Guide markdown inside the app."""
-    guide_path = HERE / "userguide.md"
+    guide_path = HERE / "docs" / "userguide.md"
     if guide_path.exists():
         content = guide_path.read_text(encoding="utf-8")
         st.markdown(content, unsafe_allow_html=True)
     else:
-        st.warning("User Guide not found. Ensure `userguide.md` exists in the app directory.")
+        st.warning("User Guide not found. Ensure `docs/userguide.md` exists.")
 
 
 PAGES = {

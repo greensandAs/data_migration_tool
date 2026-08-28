@@ -376,13 +376,13 @@ MigrateX is an enterprise data migration platform that accelerates your journey 
 ```
 
 **Screenshot:** *Observability — Run Logs tab with time window, metrics, trend chart, and batch list*
-![Observability Run Logs](docs/screenshots/observability_run_logs.png)
+![Observability Run Logs](screenshots/RunLog.png)
 
 **Screenshot:** *Observability — Health Dashboard showing stale tables and error patterns*
-![Observability Health](docs/screenshots/observability_health.png)
+![Observability Health](screenshots/HealthMonitor.png)
 
-**Screenshot:** *Observability — Alerts & Rules with active rules and create form*
-![Observability Alerts](docs/screenshots/observability_alerts.png)
+<!-- **Screenshot:** *Observability — Alerts & Rules with active rules and create form*
+![Observability Alerts](docs/screenshots/observability_alerts.png) -->
 
 ### Tab 1: Run Logs
 

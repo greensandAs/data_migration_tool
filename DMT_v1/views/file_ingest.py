@@ -654,8 +654,7 @@ def render(conn):
             try:
                 if detected_type == "CSV":
                     import io
-                    content = first_file.read().decode("utf-8", errors="replace")
-                    first_file.seek(0)  # reset for later PUT
+                    content = first_file.getvalue().decode("utf-8", errors="replace")
                     preview_df = pd.read_csv(io.StringIO(content), nrows=5)
                     st.dataframe(preview_df, use_container_width=True, hide_index=True)
                     st.caption(f"Detected: **{len(preview_df.columns)} columns**, "
@@ -663,14 +662,12 @@ def render(conn):
                 elif detected_type == "PARQUET":
                     import pyarrow.parquet as pq
                     import io
-                    pf = pq.read_table(io.BytesIO(first_file.read())).to_pandas()
-                    first_file.seek(0)
+                    pf = pq.read_table(io.BytesIO(first_file.getvalue())).to_pandas()
                     st.dataframe(pf.head(5), use_container_width=True, hide_index=True)
                     st.caption(f"Detected: **{len(pf.columns)} columns** — {first_file.name}")
                 elif detected_type == "JSON":
                     import io, json as _json
-                    content = first_file.read().decode("utf-8", errors="replace")
-                    first_file.seek(0)
+                    content = first_file.getvalue().decode("utf-8", errors="replace")
                     # Try array or newline-delimited
                     try:
                         data = _json.loads(content)

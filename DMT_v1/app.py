@@ -56,8 +56,8 @@ ST_PENDING = "#58A6FF"
 BORDER = "#263245"
 
 # ── Page config ───────────────────────────────────────────────────────────────
-    st.set_page_config(
-        page_title="MigrateX | Tiger Analytics",
+st.set_page_config(
+    page_title="MigrateX | Tiger Analytics",
     page_icon=str(_FAVICON) if _FAVICON.exists() else "🔄",
     layout="wide",
     initial_sidebar_state="expanded",

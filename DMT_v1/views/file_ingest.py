@@ -56,43 +56,54 @@ def render(conn):
             c2.metric("Last Run OK", last_ok)
             c3.metric("Last Run Failed", last_fail)
 
-            st.markdown("<br>", unsafe_allow_html=True)
+            # ── Run Controls (styled card) ────────────────────────────────────
+            from utils.ui_theme import section_card_start as _scs2, section_card_end as _sce2
+            _scs2("Run Ingestion", "▶️", border_color=ST_SUCCESS)
 
-            # Run controls
-            col_run, col_single = st.columns([1, 2])
-            if col_run.button("Run All Active Jobs", type="primary",
-                              use_container_width=True):
-                with st.spinner("Running all active ingestion jobs..."):
-                    from core.file_ingester import run_all
-                    results = run_all(conn)
-                    for r in results:
-                        status = r.get("STATUS", "?")
-                        icon = {"success": "OK", "failed": "ERR",
-                                "skipped": "SKIP"}.get(status, "?")
-                        st.write(f"[{icon}] {r.get('JOB_NAME')}: "
-                                 f"{r.get('ROWS_LOADED', 0):,} rows")
-                    st.rerun()
+            run_mode = st.radio(
+                "Execution Mode",
+                ["Run All Active", "Run Single Job"],
+                horizontal=True, key="fi_run_mode")
 
-            job_names = [c["JOB_NAME"] for c in active]
-            if job_names:
-                sel_job = col_single.selectbox(
-                    "Run single job", [""] + job_names,
-                    key="run_single_ingest")
-                if sel_job and col_single.button(f"Run '{sel_job}'"):
-                    with st.spinner(f"Running {sel_job}..."):
+            if run_mode == "Run All Active":
+                st.caption(f"Runs all {len(active)} active job(s) sequentially.")
+                if st.button("Run All Active Jobs", type="primary",
+                             use_container_width=True, key="fi_run_all"):
+                    with st.spinner("Running all active ingestion jobs..."):
                         from core.file_ingester import run_all
-                        results = run_all(conn, only_job=sel_job)
-                        if results:
-                            r = results[0]
-                            if r["STATUS"] == "success":
-                                st.success(
-                                    f"Loaded {r.get('ROWS_LOADED', 0):,} rows "
-                                    f"from {r.get('FILES_LOADED', 0)} file(s)")
-                            elif r["STATUS"] == "skipped":
-                                st.warning(r.get("ERROR_MESSAGE", "Skipped"))
-                            else:
-                                st.error(r.get("ERROR_MESSAGE", "Failed"))
+                        results = run_all(conn)
+                        for r in results:
+                            status = r.get("STATUS", "?")
+                            icon = {"success": "✅", "failed": "❌",
+                                    "skipped": "⏭️"}.get(status, "⏳")
+                            st.write(f"{icon} **{r.get('JOB_NAME')}**: "
+                                     f"{int(r.get('ROWS_LOADED') or 0):,} rows")
                         st.rerun()
+            else:
+                job_names = [c["JOB_NAME"] for c in active]
+                if job_names:
+                    sel_job = st.selectbox(
+                        "Select job", job_names, key="fi_run_single_sel")
+                    if st.button(f"Run '{sel_job}'", type="primary",
+                                 use_container_width=True, key="fi_run_single_btn"):
+                        with st.spinner(f"Running {sel_job}..."):
+                            from core.file_ingester import run_all
+                            results = run_all(conn, only_job=sel_job)
+                            if results:
+                                r = results[0]
+                                if r["STATUS"] == "success":
+                                    st.success(
+                                        f"Loaded {int(r.get('ROWS_LOADED') or 0):,} rows "
+                                        f"from {int(r.get('FILES_LOADED') or 0)} file(s)")
+                                elif r["STATUS"] == "skipped":
+                                    st.warning(r.get("ERROR_MESSAGE", "Skipped"))
+                                else:
+                                    st.error(r.get("ERROR_MESSAGE", "Failed"))
+                            st.rerun()
+                else:
+                    st.info("No active jobs to run. Activate a job first.")
+
+            _sce2()
 
             st.markdown("<br>", unsafe_allow_html=True)
 
@@ -108,38 +119,48 @@ def render(conn):
             page_configs = configs[start_j:end_j]
 
             for cfg in page_configs:
-                status_color = (ST_SUCCESS if cfg.get("LAST_RUN_STATUS") == "success"
-                                else ST_FAILED if cfg.get("LAST_RUN_STATUS") == "failed"
-                                else TXT_LABEL)
-                with st.expander(
-                    f"{'🟢' if cfg.get('ACTIVE') else '⚫'} **{cfg['JOB_NAME']}** "
-                    f"— {cfg.get('FILE_TYPE', '?')} → {cfg.get('TARGET_TABLE', '?')} "
-                    f"({cfg.get('LOAD_MODE', 'APPEND')})", expanded=False):
-                    c_info, c_actions = st.columns([3, 1])
-                    with c_info:
-                        st.caption(
-                            f"Stage: `{cfg.get('STAGE_NAME', '')}/{cfg.get('CLOUD_PATH', '')}` · "
-                            f"Pattern: `{cfg.get('FILE_PATTERN', '')}` · "
-                            f"Last: {cfg.get('LAST_ROW_COUNT', 0):,} rows at {cfg.get('LAST_RUN_AT', 'never')}")
-                    with c_actions:
-                        a1, a2 = st.columns(2)
-                        if cfg.get("ACTIVE"):
-                            if a1.button("⏸ Deactivate", key=f"deact_{cfg['CONFIG_ID']}",
-                                         use_container_width=True):
-                                file_ingest_config.deactivate(cur, cfg["CONFIG_ID"])
-                                conn.commit()
-                                st.rerun()
-                        else:
-                            if a1.button("▶ Activate", key=f"act_{cfg['CONFIG_ID']}",
-                                         use_container_width=True):
-                                file_ingest_config.activate(cur, cfg["CONFIG_ID"])
-                                conn.commit()
-                                st.rerun()
-                        if a2.button("🗑️ Delete", key=f"del_{cfg['CONFIG_ID']}",
-                                     use_container_width=True):
-                            file_ingest_config.delete_config(cur, cfg["CONFIG_ID"])
-                            conn.commit()
-                            st.rerun()
+                is_active = cfg.get("ACTIVE")
+                last_status = (cfg.get("LAST_RUN_STATUS") or "").lower()
+                status_cls = "success" if last_status == "success" else "failed" if last_status == "failed" else "pending"
+                status_icon = {"success": "✅", "failed": "❌"}.get(last_status, "⏳")
+                row_count = int(cfg.get('LAST_ROW_COUNT') or 0)
+                last_run = cfg.get('LAST_RUN_AT') or 'never'
+
+                # Job card using theme's table-card style
+                st.markdown(
+                    f'<div class="table-card {status_cls}">'
+                    f'<span class="tstatus {status_cls}">{status_icon} {status_cls.upper()}</span>'
+                    f'<div class="tname">{"🟢" if is_active else "⚫"} {cfg["JOB_NAME"]}</div>'
+                    f'<div class="tmeta">'
+                    f'<span class="pill pill-source">{cfg.get("FILE_TYPE", "?")}</span> '
+                    f'<span class="pill pill-full">{cfg.get("LOAD_MODE", "APPEND")}</span> '
+                    f'→ {cfg.get("TARGET_TABLE", "?")}</div>'
+                    f'<div class="tmeta" style="margin-top:6px;">'
+                    f'Stage: <code>{cfg.get("STAGE_NAME", "")}/{cfg.get("CLOUD_PATH", "")}</code> · '
+                    f'Pattern: <code>{cfg.get("FILE_PATTERN", "")}</code></div>'
+                    f'<div class="tmeta">Last run: {row_count:,} rows at {last_run}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True)
+
+                # Action buttons below each card
+                a1, a2, a3 = st.columns([1, 1, 4])
+                if is_active:
+                    if a1.button("⏸ Pause", key=f"deact_{cfg['CONFIG_ID']}",
+                                 use_container_width=True):
+                        file_ingest_config.deactivate(cur, cfg["CONFIG_ID"])
+                        conn.commit()
+                        st.rerun()
+                else:
+                    if a1.button("▶ Resume", key=f"act_{cfg['CONFIG_ID']}",
+                                 use_container_width=True):
+                        file_ingest_config.activate(cur, cfg["CONFIG_ID"])
+                        conn.commit()
+                        st.rerun()
+                if a2.button("🗑️ Delete", key=f"del_{cfg['CONFIG_ID']}",
+                             use_container_width=True):
+                    file_ingest_config.delete_config(cur, cfg["CONFIG_ID"])
+                    conn.commit()
+                    st.rerun()
 
             # Jobs pagination controls
             if total_job_pages > 1:
@@ -820,12 +841,11 @@ def render(conn):
 
                         if result["STATUS"] == "success":
                             st.success(
-                                f"Loaded **{result.get('ROWS_LOADED', 0):,}** rows "
-                                f"from {result.get('FILES_LOADED', 0)} file(s) into "
+                                f"Loaded **{int(result.get('ROWS_LOADED') or 0):,}** rows "
+                                f"from {int(result.get('FILES_LOADED') or 0)} file(s) into "
                                 f"`{upload_target_db.strip().upper()}."
                                 f"{upload_target_schema.strip().upper()}."
                                 f"{upload_target_table.strip().upper()}`")
-                            st.balloons()
                         elif result["STATUS"] == "skipped":
                             st.warning(f"Skipped: {result.get('ERROR_MESSAGE', '?')}")
                         else:

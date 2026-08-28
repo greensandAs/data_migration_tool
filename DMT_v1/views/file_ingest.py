@@ -227,171 +227,279 @@ def render(conn):
         if edit_sel != "-- New Job --":
             editing = next((c for c in existing if c["JOB_NAME"] == edit_sel), None)
 
-        with st.form("file_ingest_form", clear_on_submit=False):
-            col1, col2 = st.columns(2)
+        # No st.form — allows dynamic updates when fields change
+        col1, col2 = st.columns(2)
+        job_name = col1.text_input(
+            "Job Name *",
+            value=editing["JOB_NAME"] if editing else "",
+            placeholder="daily_sales_feed", key="fi_job_name")
+        active = col2.checkbox(
+            "Active",
+            value=editing["ACTIVE"] if editing else True, key="fi_active")
 
-            # Basic info
-            job_name = col1.text_input(
-                "Job Name *",
-                value=editing["JOB_NAME"] if editing else "",
-                placeholder="daily_sales_feed")
-            active = col2.checkbox(
-                "Active",
-                value=editing["ACTIVE"] if editing else True)
+        # ── Source (Cloud Files) ─────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("**Source (Cloud Files)**")
 
-            st.markdown("---")
-            st.markdown("**Source (Cloud Files)**")
-            s1, s2 = st.columns(2)
+        # Dynamic stage picker — show available stages from Snowflake
+        s1, s2 = st.columns(2)
+        try:
+            cur.execute("SHOW STAGES IN ACCOUNT")
+            stage_rows = cur.fetchall()
+            stage_name_idx = next(i for i, d in enumerate(cur.description) if d[0] == "name")
+            stage_db_idx = next(i for i, d in enumerate(cur.description) if d[0] == "database_name")
+            stage_schema_idx = next(i for i, d in enumerate(cur.description) if d[0] == "schema_name")
+            available_stages = [
+                f"{r[stage_db_idx]}.{r[stage_schema_idx]}.{r[stage_name_idx]}"
+                for r in stage_rows
+            ]
+        except Exception:
+            available_stages = []
+
+        if available_stages:
+            stage_options = ["-- Type manually --"] + available_stages
+            default_idx = 0
+            if editing and editing.get("STAGE_NAME"):
+                try:
+                    default_idx = stage_options.index(editing["STAGE_NAME"])
+                except ValueError:
+                    default_idx = 0
+            stage_sel = s1.selectbox("Stage Name *", stage_options,
+                                     index=default_idx, key="fi_stage_sel")
+            if stage_sel == "-- Type manually --":
+                stage_name = s1.text_input("Stage FQN",
+                                           value=editing.get("STAGE_NAME", "") if editing else "",
+                                           placeholder="DB.SCHEMA.STAGE", key="fi_stage_manual")
+            else:
+                stage_name = stage_sel
+        else:
             stage_name = s1.text_input(
                 "Stage Name (FQN) *",
                 value=editing.get("STAGE_NAME", "") if editing else "",
-                placeholder="ANALYTICS.RAW.S3_STAGE")
-            cloud_provider = s2.selectbox(
-                "Cloud Provider",
-                ["S3", "AZURE", "GCS"],
-                index=["S3", "AZURE", "GCS"].index(
-                    editing.get("CLOUD_PROVIDER", "S3")) if editing else 0)
+                placeholder="ANALYTICS.RAW.S3_STAGE", key="fi_stage_name")
 
-            s3, s4 = st.columns(2)
-            cloud_path = s3.text_input(
-                "Cloud Path (subfolder)",
-                value=editing.get("CLOUD_PATH", "") if editing else "",
-                placeholder="data-feeds/sales/")
-            file_pattern = s4.text_input(
-                "File Pattern (regex) *",
-                value=editing.get("FILE_PATTERN", "") if editing else "",
-                placeholder=".*sales.*\\.csv")
+        cloud_provider = s2.selectbox(
+            "Cloud Provider",
+            ["S3", "AZURE", "GCS", "INTERNAL"],
+            index=["S3", "AZURE", "GCS", "INTERNAL"].index(
+                editing.get("CLOUD_PROVIDER", "S3")) if editing and editing.get("CLOUD_PROVIDER") in ["S3", "AZURE", "GCS", "INTERNAL"] else 0,
+            key="fi_cloud_provider")
 
-            s5, s6 = st.columns(2)
-            file_type = s5.selectbox(
-                "File Type",
-                ["CSV", "PARQUET", "JSON", "AVRO"],
-                index=["CSV", "PARQUET", "JSON", "AVRO"].index(
-                    editing.get("FILE_TYPE", "CSV")) if editing else 0)
-            date_partition = s6.checkbox(
-                "Date-partitioned path",
-                value=editing.get("DATE_PARTITION", False) if editing else False)
+        s3, s4 = st.columns(2)
+        cloud_path = s3.text_input(
+            "Cloud Path (subfolder)",
+            value=editing.get("CLOUD_PATH", "") if editing else "",
+            placeholder="data-feeds/sales/", key="fi_cloud_path")
+        file_pattern = s4.text_input(
+            "File Pattern (regex) *",
+            value=editing.get("FILE_PATTERN", "") if editing else "",
+            placeholder=".*sales.*\\.csv", key="fi_file_pattern")
 
-            # Date format (shown only when date partition is enabled)
-            date_format = ""
-            if date_partition:
-                date_format = st.text_input(
-                    "Date Format (Python strftime)",
-                    value=editing.get("DATE_FORMAT", "%Y%m%d") if editing else "%Y%m%d",
-                    placeholder="%Y%m%d or %Y/%m/%d",
-                    help="Format for date subfolder: %Y=year, %m=month, %d=day. "
-                         "E.g. %Y%m%d → 20260826, %Y/%m/%d → 2026/08/26")
+        s5, s6 = st.columns(2)
+        file_type = s5.selectbox(
+            "File Type",
+            ["CSV", "PARQUET", "JSON", "AVRO"],
+            index=["CSV", "PARQUET", "JSON", "AVRO"].index(
+                editing.get("FILE_TYPE", "CSV")) if editing else 0,
+            key="fi_file_type")
+        date_partition = s6.checkbox(
+            "Date-partitioned path",
+            value=editing.get("DATE_PARTITION", False) if editing else False,
+            key="fi_date_part")
 
-            # MERGE keys (shown only when load mode is MERGE)
-            merge_keys_input = ""
+        date_format = ""
+        if date_partition:
+            date_format = st.text_input(
+                "Date Format (Python strftime)",
+                value=editing.get("DATE_FORMAT", "%Y%m%d") if editing else "%Y%m%d",
+                placeholder="%Y%m%d", key="fi_date_fmt")
 
-            st.markdown("---")
-            st.markdown("**Target (Snowflake)**")
-            t1, t2, t3 = st.columns(3)
-            target_db = t1.text_input(
-                "Target Database *",
-                value=editing.get("TARGET_DB", "") if editing else "",
-                placeholder="ANALYTICS")
-            target_schema = t2.text_input(
-                "Target Schema",
-                value=editing.get("TARGET_SCHEMA", "RAW") if editing else "RAW")
-            target_table = t3.text_input(
-                "Target Table *",
-                value=editing.get("TARGET_TABLE", "") if editing else "",
-                placeholder="DAILY_SALES")
+        # ── Target (Snowflake) — Dynamic DB/Schema/Table ─────────────────────
+        st.markdown("---")
+        st.markdown("**Target (Snowflake)**")
 
-            t4, t5 = st.columns(2)
-            load_mode = t4.selectbox(
-                "Load Mode",
-                ["APPEND", "OVERWRITE", "MERGE"],
-                index=["APPEND", "OVERWRITE", "MERGE"].index(
-                    editing.get("LOAD_MODE", "APPEND")) if editing else 0)
-            table_exists = t5.checkbox(
-                "Table already exists",
-                value=editing.get("TABLE_EXISTS", True) if editing else True,
-                help="Uncheck to auto-create table from file schema")
+        # Fetch available databases
+        try:
+            cur.execute("SHOW DATABASES")
+            db_rows = cur.fetchall()
+            db_name_idx = next(i for i, d in enumerate(cur.description) if d[0] == "name")
+            available_dbs = [r[db_name_idx] for r in db_rows]
+        except Exception:
+            available_dbs = []
 
-            if load_mode == "MERGE":
-                merge_keys_input = st.text_input(
-                    "Merge Keys (comma-separated) *",
-                    value=editing.get("MERGE_KEYS", "") if editing else "",
-                    placeholder="e.g. ID, CUSTOMER_ID",
-                    help="Primary key column(s) for MERGE deduplication")
+        t1, t2, t3 = st.columns(3)
 
+        # Database picker
+        if available_dbs:
+            db_options = available_dbs
+            default_db = editing.get("TARGET_DB", "HISTLOAD_DB") if editing else "HISTLOAD_DB"
+            db_idx = db_options.index(default_db) if default_db in db_options else 0
+            target_db = t1.selectbox("Target Database *", db_options,
+                                     index=db_idx, key="fi_tgt_db")
+        else:
+            target_db = t1.text_input("Target Database *",
+                                      value=editing.get("TARGET_DB", "") if editing else "",
+                                      key="fi_tgt_db_txt")
+
+        # Schema picker (dynamic based on selected DB)
+        try:
+            cur.execute(f"SHOW SCHEMAS IN DATABASE {target_db}")
+            sch_rows = cur.fetchall()
+            sch_name_idx = next(i for i, d in enumerate(cur.description) if d[0] == "name")
+            available_schemas = [r[sch_name_idx] for r in sch_rows
+                                 if r[sch_name_idx] not in ("INFORMATION_SCHEMA",)]
+        except Exception:
+            available_schemas = []
+
+        if available_schemas:
+            sch_options = available_schemas + ["-- New Schema --"]
+            default_sch = editing.get("TARGET_SCHEMA", "RAW") if editing else "RAW"
+            sch_idx = sch_options.index(default_sch) if default_sch in sch_options else 0
+            target_schema_sel = t2.selectbox("Target Schema", sch_options,
+                                             index=sch_idx, key="fi_tgt_schema")
+            if target_schema_sel == "-- New Schema --":
+                target_schema = t2.text_input("New Schema Name",
+                                              placeholder="RAW", key="fi_tgt_schema_new")
+            else:
+                target_schema = target_schema_sel
+        else:
+            target_schema = t2.text_input("Target Schema",
+                                          value=editing.get("TARGET_SCHEMA", "RAW") if editing else "RAW",
+                                          key="fi_tgt_schema_txt")
+
+        # Table picker (dynamic based on selected DB.Schema)
+        try:
+            cur.execute(f"SHOW TABLES IN {target_db}.{target_schema}")
+            tbl_rows = cur.fetchall()
+            tbl_name_idx = next(i for i, d in enumerate(cur.description) if d[0] == "name")
+            available_tables = [r[tbl_name_idx] for r in tbl_rows]
+        except Exception:
+            available_tables = []
+
+        if available_tables:
+            tbl_options = ["-- New Table --"] + available_tables
+            default_tbl = editing.get("TARGET_TABLE", "") if editing else ""
+            tbl_idx = tbl_options.index(default_tbl) if default_tbl in tbl_options else 0
+            target_table_sel = t3.selectbox("Target Table *", tbl_options,
+                                            index=tbl_idx, key="fi_tgt_table")
+            if target_table_sel == "-- New Table --":
+                target_table = t3.text_input("New Table Name",
+                                             placeholder="DAILY_SALES", key="fi_tgt_table_new")
+                table_exists = False
+            else:
+                target_table = target_table_sel
+                table_exists = True
+        else:
+            target_table = t3.text_input("Target Table *",
+                                         value=editing.get("TARGET_TABLE", "") if editing else "",
+                                         placeholder="DAILY_SALES", key="fi_tgt_table_txt")
+            table_exists = False
+
+        t4, t5 = st.columns(2)
+        load_mode = t4.selectbox(
+            "Load Mode",
+            ["APPEND", "OVERWRITE", "MERGE"],
+            index=["APPEND", "OVERWRITE", "MERGE"].index(
+                editing.get("LOAD_MODE", "APPEND")) if editing else 0,
+            key="fi_load_mode")
+        auto_create = t5.checkbox(
+            "Auto-create table (if not exists)",
+            value=not table_exists,
+            key="fi_auto_create")
+
+        # Merge keys (shown dynamically when MERGE selected)
+        merge_keys_input = ""
+        if load_mode == "MERGE":
+            merge_keys_input = st.text_input(
+                "Merge Keys (comma-separated) *",
+                value=editing.get("MERGE_KEYS", "") if editing else "",
+                placeholder="e.g. ID, CUSTOMER_ID",
+                help="Primary key column(s) for MERGE deduplication",
+                key="fi_merge_keys")
+
+        # ── Format Options (shown dynamically for CSV) ───────────────────────
+        if file_type == "CSV":
             st.markdown("---")
             st.markdown("**Format Options** (CSV)")
             f1, f2, f3, f4 = st.columns(4)
-            delimiter = f1.text_input(
-                "Delimiter",
-                value=editing.get("FIELD_DELIMITER", ",") if editing else ",")
-            enclosed = f2.text_input(
-                "Enclosed By",
-                value=editing.get("FIELD_ENCLOSED_BY", '"') if editing else '"')
-            escape = f3.text_input(
-                "Escape Char",
-                value=editing.get("ESCAPE_CHARACTER", "\\") if editing else "\\")
-            skip_header = f4.number_input(
-                "Skip Header",
-                value=int(editing.get("SKIP_HEADER", 1)) if editing else 1,
-                min_value=0, max_value=10)
+            delimiter = f1.text_input("Delimiter",
+                                      value=editing.get("FIELD_DELIMITER", ",") if editing else ",",
+                                      key="fi_delim")
+            enclosed = f2.text_input("Enclosed By",
+                                     value=editing.get("FIELD_ENCLOSED_BY", '"') if editing else '"',
+                                     key="fi_enclosed")
+            escape = f3.text_input("Escape Char",
+                                   value=editing.get("ESCAPE_CHARACTER", "\\") if editing else "\\",
+                                   key="fi_escape")
+            skip_header = f4.number_input("Skip Header",
+                                          value=int(editing.get("SKIP_HEADER", 1)) if editing else 1,
+                                          min_value=0, max_value=10, key="fi_skip")
+        else:
+            delimiter = ","
+            enclosed = '"'
+            escape = "\\"
+            skip_header = 0
 
-            st.markdown("---")
-            st.markdown("**COPY INTO Options**")
-            o1, o2 = st.columns(2)
-            on_error = o1.selectbox(
-                "ON_ERROR",
-                ["ABORT_STATEMENT", "CONTINUE", "SKIP_FILE"],
-                index=["ABORT_STATEMENT", "CONTINUE", "SKIP_FILE"].index(
-                    editing.get("ON_ERROR", "ABORT_STATEMENT")) if editing else 0)
-            match_by = o2.selectbox(
-                "MATCH_BY_COLUMN_NAME",
-                ["", "CASE_INSENSITIVE", "CASE_SENSITIVE"],
-                index=["", "CASE_INSENSITIVE", "CASE_SENSITIVE"].index(
-                    editing.get("MATCH_BY_COLUMN_NAME") or "") if editing else 0)
-            purge = st.checkbox(
-                "Purge files after load",
-                value=editing.get("PURGE_FILES", False) if editing else False)
+        # ── COPY INTO Options ────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("**COPY INTO Options**")
+        o1, o2 = st.columns(2)
+        on_error = o1.selectbox(
+            "ON_ERROR",
+            ["ABORT_STATEMENT", "CONTINUE", "SKIP_FILE"],
+            index=["ABORT_STATEMENT", "CONTINUE", "SKIP_FILE"].index(
+                editing.get("ON_ERROR", "ABORT_STATEMENT")) if editing else 0,
+            key="fi_on_error")
+        match_by = o2.selectbox(
+            "MATCH_BY_COLUMN_NAME",
+            ["", "CASE_INSENSITIVE", "CASE_SENSITIVE"],
+            index=["", "CASE_INSENSITIVE", "CASE_SENSITIVE"].index(
+                editing.get("MATCH_BY_COLUMN_NAME") or "") if editing else 0,
+            key="fi_match_by")
+        purge = st.checkbox(
+            "Purge files after load",
+            value=editing.get("PURGE_FILES", False) if editing else False,
+            key="fi_purge")
 
-            submitted = st.form_submit_button(
-                "Save Job" if not editing else "Update Job",
-                type="primary", use_container_width=True)
-
-            if submitted:
-                if not job_name or not stage_name or not file_pattern or not target_db or not target_table:
-                    st.error("Please fill all required fields (marked with *)")
-                elif load_mode == "MERGE" and not merge_keys_input.strip():
-                    st.error("MERGE mode requires Merge Keys to be specified.")
-                else:
-                    save_data = {
-                        "JOB_NAME": job_name.strip(),
-                        "ACTIVE": active,
-                        "CLOUD_PROVIDER": cloud_provider,
-                        "STAGE_NAME": stage_name.strip(),
-                        "CLOUD_PATH": cloud_path.strip(),
-                        "FILE_PATTERN": file_pattern.strip(),
-                        "FILE_TYPE": file_type,
-                        "TARGET_DB": target_db.strip().upper(),
-                        "TARGET_SCHEMA": target_schema.strip().upper() or "RAW",
-                        "TARGET_TABLE": target_table.strip().upper(),
-                        "LOAD_MODE": load_mode,
-                        "TABLE_EXISTS": table_exists,
-                        "FIELD_DELIMITER": delimiter,
-                        "FIELD_ENCLOSED_BY": enclosed,
-                        "ESCAPE_CHARACTER": escape,
-                        "SKIP_HEADER": int(skip_header),
-                        "ON_ERROR": on_error,
-                        "MATCH_BY_COLUMN_NAME": match_by or None,
-                        "PURGE_FILES": purge,
-                        "DATE_PARTITION": date_partition,
-                        "DATE_FORMAT": date_format.strip() or None,
-                        "MERGE_KEYS": merge_keys_input.strip() or None,
-                    }
-                    if editing:
-                        save_data["CONFIG_ID"] = editing["CONFIG_ID"]
-                    file_ingest_config.upsert(cur, save_data)
-                    conn.commit()
-                    st.success(f"Job '{job_name}' saved successfully!")
-                    st.rerun()
+        # ── Save Button ──────────────────────────────────────────────────────
+        st.markdown("---")
+        if st.button("💾 Save Job" if not editing else "💾 Update Job",
+                     type="primary", use_container_width=True, key="fi_save_btn"):
+            if not job_name or not stage_name or not file_pattern or not target_db or not target_table:
+                st.error("Please fill all required fields (marked with *)")
+            elif load_mode == "MERGE" and not merge_keys_input.strip():
+                st.error("MERGE mode requires Merge Keys to be specified.")
+            else:
+                save_data = {
+                    "JOB_NAME": job_name.strip(),
+                    "ACTIVE": active,
+                    "CLOUD_PROVIDER": cloud_provider,
+                    "STAGE_NAME": stage_name.strip() if isinstance(stage_name, str) else stage_name,
+                    "CLOUD_PATH": cloud_path.strip(),
+                    "FILE_PATTERN": file_pattern.strip(),
+                    "FILE_TYPE": file_type,
+                    "TARGET_DB": target_db.strip().upper() if isinstance(target_db, str) else target_db,
+                    "TARGET_SCHEMA": (target_schema.strip().upper() if isinstance(target_schema, str) else target_schema) or "RAW",
+                    "TARGET_TABLE": target_table.strip().upper() if isinstance(target_table, str) else target_table,
+                    "LOAD_MODE": load_mode,
+                    "TABLE_EXISTS": not auto_create,
+                    "FIELD_DELIMITER": delimiter,
+                    "FIELD_ENCLOSED_BY": enclosed,
+                    "ESCAPE_CHARACTER": escape,
+                    "SKIP_HEADER": int(skip_header),
+                    "ON_ERROR": on_error,
+                    "MATCH_BY_COLUMN_NAME": match_by or None,
+                    "PURGE_FILES": purge,
+                    "DATE_PARTITION": date_partition,
+                    "DATE_FORMAT": date_format.strip() or None,
+                    "MERGE_KEYS": merge_keys_input.strip() or None,
+                }
+                if editing:
+                    save_data["CONFIG_ID"] = editing["CONFIG_ID"]
+                file_ingest_config.upsert(cur, save_data)
+                conn.commit()
+                st.success(f"Job '{job_name}' saved successfully!")
+                st.rerun()
 
     # ── Tab 3: Upload & Ingest ─────────────────────────────────────────────────
     with tab_upload:

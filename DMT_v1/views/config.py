@@ -672,22 +672,26 @@ def _render_add_table_dialog(cur, conn, profile_name: str, default_schema: str |
 
         # AI Recommend button — auto-fills load type, watermark, merge keys
         from utils.shared import ai_enabled
-        if ai_enabled() and source_db.strip() and source_table.strip():
-            if st.button("🤖 AI Recommend Settings", key="dlg_ai_rec", use_container_width=True):
-                with st.spinner("Asking AI Gateway..."):
-                    # Fetch profile dict for source connection
-                    _prof_cur = conn.cursor()
-                    _prof = connection_manager.get_profile(_prof_cur, profile_name)
-                    _prof_cur.close()
-                    if _prof:
-                        rec = _ai_recommend(source_db.strip(), source_table.strip(),
-                                            profile=_prof, sf_conn=conn)
-                        if rec.get("json"):
-                            st.session_state["_ai_rec"] = rec["json"]
+        if ai_enabled():
+            if source_db.strip() and source_table.strip():
+                if st.button("🤖 AI Recommend Settings", key="dlg_ai_rec", use_container_width=True):
+                    with st.spinner("Asking AI Gateway..."):
+                        _prof_cur = conn.cursor()
+                        _prof = connection_manager.get_profile(_prof_cur, profile_name)
+                        _prof_cur.close()
+                        if _prof:
+                            rec = _ai_recommend(source_db.strip(), source_table.strip(),
+                                                profile=_prof, sf_conn=conn)
+                            if rec.get("json"):
+                                st.session_state["_ai_rec"] = rec["json"]
+                            else:
+                                st.warning(f"AI could not parse recommendation:\n{rec.get('raw', '')}")
                         else:
-                            st.warning(f"AI could not parse recommendation:\n{rec.get('raw', '')}")
-                    else:
-                        st.error(f"Profile `{profile_name}` not found.")
+                            st.error(f"Profile `{profile_name}` not found.")
+            else:
+                st.button("🤖 AI Recommend Settings", key="dlg_ai_rec_disabled",
+                          use_container_width=True, disabled=True,
+                          help="Fill in Source Schema and Source Table to enable AI recommendations")
             # Apply AI recommendations to form defaults
             if "_ai_rec" in st.session_state:
                 ai_rec = st.session_state["_ai_rec"]

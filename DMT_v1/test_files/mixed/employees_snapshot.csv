@@ -1,0 +1,6 @@
+id,name,department,salary,hire_date,is_active
+1,Alice Johnson,Engineering,95000.5,2024-03-15,True
+2,Bob Smith,Marketing,72000.0,2023-07-22,True
+3,Carol Davis,Engineering,110000.75,2022-01-10,True
+4,David Lee,Sales,68000.25,2024-06-01,False
+5,Eva Martinez,Engineering,125000.0,2021-11-30,True

@@ -1,0 +1,10 @@
+{"id": 1, "name": "Alice Johnson", "department": "Engineering", "salary": 95000.5, "hire_date": "2024-03-15", "is_active": true}
+{"id": 2, "name": "Bob Smith", "department": "Marketing", "salary": 72000.0, "hire_date": "2023-07-22", "is_active": true}
+{"id": 3, "name": "Carol Davis", "department": "Engineering", "salary": 110000.75, "hire_date": "2022-01-10", "is_active": true}
+{"id": 4, "name": "David Lee", "department": "Sales", "salary": 68000.25, "hire_date": "2024-06-01", "is_active": false}
+{"id": 5, "name": "Eva Martinez", "department": "Engineering", "salary": 125000.0, "hire_date": "2021-11-30", "is_active": true}
+{"id": 6, "name": "Frank Wilson", "department": "HR", "salary": 82000.0, "hire_date": "2023-09-14", "is_active": true}
+{"id": 7, "name": "Grace Kim", "department": "Marketing", "salary": 76500.5, "hire_date": "2024-01-08", "is_active": true}
+{"id": 8, "name": "Henry Brown", "department": "Sales", "salary": 71000.0, "hire_date": "2022-05-20", "is_active": false}
+{"id": 9, "name": "Irene Chen", "department": "Engineering", "salary": 105000.25, "hire_date": "2023-03-01", "is_active": true}
+{"id": 10, "name": "Jack Taylor", "department": "HR", "salary": 88000.0, "hire_date": "2024-08-15", "is_active": true}

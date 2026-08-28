@@ -24,6 +24,7 @@ from views.history import render as render_history
 from views.monitoring import render as render_monitoring
 from views.ddl import render as render_ddl
 from views.file_ingest import render as render_file_ingest
+from views.snowpipe_wizard import render as render_snowpipe_wizard
 
 try:
     from dotenv import load_dotenv
@@ -517,6 +518,7 @@ PAGES = {
     "Connections": render_connections,
     "Config": render_config,
     "File Ingest": render_file_ingest,
+    "Snowpipe (Beta)": render_snowpipe_wizard,
     "DDL": render_ddl,
     "Run": render_run,
     "History": render_history,
@@ -545,24 +547,47 @@ with st.sidebar:
             f'<h4 style="color:{TXT_PRIMARY};text-align:center;margin:0">DMT v1</h4>'
             f'</div>', unsafe_allow_html=True)
 
-    # ── Navigation buttons ────────────────────────────────────────────────────
-    NAV_ICONS = {
+    # ── Navigation buttons (grouped) ────────────────────────────────────────────
+    # Group 1: Database Migration (core)
+    st.markdown(
+        f'<div style="font-size:.6rem;letter-spacing:2px;text-transform:uppercase;'
+        f'color:{TA_ORANGE};font-weight:700;margin:8px 0 6px 0;">Database Migration</div>',
+        unsafe_allow_html=True)
+
+    NAV_MIGRATION = {
         "Dashboard": "📊",
         "Config": "⚙️",
-        "File Ingest": "📁",
         "DDL": "🏗️",
         "Run": "▶️",
         "History": "📜",
         "Monitoring": "🩺",
     }
-    for page_name in NAV_ICONS.keys():
-        icon = NAV_ICONS[page_name]
+    for page_name, icon in NAV_MIGRATION.items():
         is_active = st.session_state.current_page == page_name
         btn_type = "primary" if is_active else "secondary"
         if st.button(f"{icon} {page_name}", key=f"nav_{page_name}",
                      use_container_width=True, type=btn_type):
             st.session_state.current_page = page_name
             st.rerun()
+
+    # Group 2: File Ingestion
+    st.markdown(
+        f'<div style="font-size:.6rem;letter-spacing:2px;text-transform:uppercase;'
+        f'color:#58A6FF;font-weight:700;margin:16px 0 6px 0;">File Ingestion</div>',
+        unsafe_allow_html=True)
+
+    NAV_FILE = {
+        "File Ingest": "📁",
+        "Snowpipe (Beta)": "🚿",
+    }
+    for page_name, icon in NAV_FILE.items():
+        is_active = st.session_state.current_page == page_name
+        btn_type = "primary" if is_active else "secondary"
+        if st.button(f"{icon} {page_name}", key=f"nav_{page_name}",
+                     use_container_width=True, type=btn_type):
+            st.session_state.current_page = page_name
+            st.rerun()
+
     selected = st.session_state.current_page
 
     st.markdown(f"<hr style='border-color:{BORDER}'>", unsafe_allow_html=True)

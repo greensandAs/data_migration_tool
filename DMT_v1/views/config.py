@@ -73,6 +73,98 @@ def _discover_mysql_schemas(profile: dict) -> list[str]:
     return schemas
 
 
+def _ai_enrich_discovery(entries: list[dict], profile: dict, schema: str,
+                         sf_conn) -> list[dict]:
+    """Enhance discovered table entries with AI recommendations.
+
+    Sends a batch prompt with all tables' column info to the AI Gateway.
+    Returns enriched entries with AI-recommended load_type, watermark, scd_type, etc.
+    Falls back to original rule-based entries on any AI failure.
+    """
+    source_type = (profile.get("SOURCE_TYPE") or "mysql").lower()
+    password = profile.get("PASSWORD") or os.getenv(profile.get("AUTH_SECRET") or "", "") or ""
+
+    # Collect column metadata for each table
+    table_summaries = []
+    for entry in entries:
+        table_name = entry["SOURCE_TABLE"]
+        pk = entry.get("PRIMARY_KEY") or "NONE"
+        mk = entry.get("MERGE_KEYS") or []
+        cols_info = entry.get("_columns_txt", "")
+
+        # If column info not already available, build a short summary from entry
+        if not cols_info:
+            parts = [f"PK={pk}"]
+            if entry.get("WATERMARK_COL"):
+                parts.append(f"has_timestamp={entry['WATERMARK_COL']}")
+            if mk:
+                parts.append(f"merge_keys={mk}")
+            cols_info = ", ".join(parts)
+
+        table_summaries.append(f"- {table_name}: {cols_info}")
+
+    # Build batch prompt
+    tables_txt = "\n".join(table_summaries)
+    prompt = (
+        f"You are a data migration assistant for a {source_type.upper()}->Snowflake replication tool.\n"
+        f"Schema: {schema}\n"
+        f"Tables discovered ({len(entries)}):\n{tables_txt}\n\n"
+        "For EACH table, recommend: load_type (full/incremental), watermark_col (or null), "
+        "watermark_type (time/id/null), scd_type (0/1/2), filter_condition (or null), "
+        "trim (true/false).\n\n"
+        "Respond with ONLY a JSON array — one object per table in the same order. "
+        "Each object: {\"table\": \"NAME\", \"load_type\": \"...\", \"watermark_col\": ..., "
+        "\"watermark_type\": ..., \"scd_type\": ..., \"filter_condition\": ..., \"trim\": ...}\n"
+        "No markdown, no explanation — just the JSON array."
+    )
+
+    try:
+        from utils.shared import cortex_complete
+        raw = cortex_complete(prompt, feature="config", conn=sf_conn)
+        txt = raw.strip()
+        if "```" in txt:
+            txt = txt.split("```")[1].lstrip("json").strip()
+        start, end = txt.find("["), txt.rfind("]")
+        if start == -1 or end == -1:
+            return entries
+        recommendations = json.loads(txt[start:end + 1])
+
+        # Build lookup by table name
+        rec_map = {}
+        for rec in recommendations:
+            tname = (rec.get("table") or "").upper()
+            if tname:
+                rec_map[tname] = rec
+
+        # Enrich entries
+        for entry in entries:
+            tname = entry["SOURCE_TABLE"].upper()
+            rec = rec_map.get(tname)
+            if not rec:
+                continue
+            # Override rule-based values with AI recommendations
+            if rec.get("load_type") in ("full", "incremental"):
+                entry["LOAD_TYPE"] = rec["load_type"]
+            if rec.get("watermark_col"):
+                entry["WATERMARK_COL"] = str(rec["watermark_col"]).upper()
+            elif rec.get("load_type") == "full":
+                entry["WATERMARK_COL"] = None
+            if rec.get("scd_type") in (0, 1, 2):
+                entry["SCD_TYPE"] = rec["scd_type"]
+            if rec.get("filter_condition"):
+                entry["FILTER_CONDITION"] = rec["filter_condition"]
+            if rec.get("trim") is not None:
+                entry["TRIM"] = bool(rec["trim"])
+            # Update review notes
+            entry["_review"] = f"🤖 AI: {rec.get('load_type', '?')}, scd={rec.get('scd_type', '?')}"
+
+    except Exception:
+        # AI failed — return original rule-based entries unchanged
+        pass
+
+    return entries
+
+
 def _discover_tables(profile: dict, schema: str) -> list[dict]:
     source_type = (profile.get("SOURCE_TYPE") or "mysql").lower()
     password = profile.get("PASSWORD") or os.getenv(profile.get("AUTH_SECRET") or "", "") or ""
@@ -145,6 +237,7 @@ def _discover_tables_teradata(profile: dict, schema: str, password: str) -> list
             "LOAD_TYPE": "incremental" if wm else "full",
             "PARTITION_COL": pk_cols[0] if len(pk_cols) == 1 else None,
             "_review": "; ".join(reviews) if reviews else None,
+            "_columns_txt": f"PK={pk_cols or 'NONE'}, cols=[{', '.join(f'{n}({col_types.get(n.lower(), \"?\")})' for n in col_names)}]",
         })
 
     cur.close()
@@ -203,6 +296,7 @@ def _discover_tables_mysql(profile: dict, schema: str, password: str) -> list[di
             "LOAD_TYPE": "incremental" if wm else "full",
             "PARTITION_COL": pk_cols[0].upper() if len(pk_cols) == 1 else None,
             "_review": "; ".join(reviews) if reviews else None,
+            "_columns_txt": f"PK={[c.upper() for c in pk_cols] or 'NONE'}, cols=[{', '.join(f'{k}({v})' for k, v in col_map.items())}]",
         })
 
     cur.close()
@@ -285,6 +379,7 @@ def _discover_tables_mssql(profile: dict, schema: str, password: str) -> list[di
             "WATERMARK_COL": wm.upper() if wm else None,
             "LOAD_TYPE": "incremental" if wm else "full",
             "PARTITION_COL": pk_cols[0].upper() if len(pk_cols) == 1 else None,
+            "_columns_txt": f"PK={[c.upper() for c in pk_cols] or 'NONE'}, cols=[{', '.join(f'{n}({t})' for n, t in columns)}]",
         })
 
     cur.close()
@@ -355,6 +450,7 @@ def _discover_tables_oracle(profile: dict, schema: str, password: str) -> list[d
             "WATERMARK_COL": wm.upper() if wm else None,
             "LOAD_TYPE": "incremental" if wm else "full",
             "PARTITION_COL": pk_cols[0].upper() if len(pk_cols) == 1 else None,
+            "_columns_txt": f"PK={[c.upper() for c in pk_cols] or 'NONE'}, cols=[{', '.join(f'{n}({t})' for n, t in columns)}]",
         })
 
     cur.close()
@@ -363,39 +459,157 @@ def _discover_tables_oracle(profile: dict, schema: str, password: str) -> list[d
 
 
 def _ai_recommend(source_db: str, source_table: str, profile: dict, sf_conn=None):
-    """Ask AI Gateway for config recommendations."""
-    import mysql.connector
-    password = os.getenv(profile.get("AUTH_SECRET") or "", "")
-    myconn = mysql.connector.connect(
-        host=profile["HOST"], port=profile["PORT"],
-        user=profile["USERNAME"], password=password)
-    cur = myconn.cursor()
-    cur.execute(
-        "SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_KEY, EXTRA "
-        "FROM information_schema.columns "
-        "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION",
-        (source_db, source_table))
-    cols = [{"name": r[0], "type": r[1], "key": r[2], "extra": r[3]} for r in cur.fetchall()]
-    cur.execute(
-        "SELECT COLUMN_NAME FROM information_schema.key_column_usage "
-        "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND CONSTRAINT_NAME='PRIMARY' "
-        "ORDER BY ORDINAL_POSITION", (source_db, source_table))
-    pk = [r[0] for r in cur.fetchall()]
-    cur.close()
-    myconn.close()
+    """Ask AI Gateway for config recommendations. Supports all source types."""
+    source_type = (profile.get("SOURCE_TYPE") or "mysql").lower()
+    password = profile.get("PASSWORD") or os.getenv(profile.get("AUTH_SECRET") or "", "") or ""
 
+    # ── Fetch columns and primary key from source ────────────────────────────
+    cols = []
+    pk = []
+
+    if source_type == "mysql":
+        import mysql.connector
+        myconn = mysql.connector.connect(
+            host=str(profile["HOST"]), port=int(profile["PORT"]),
+            user=str(profile["USERNAME"]), password=str(password))
+        cur = myconn.cursor()
+        cur.execute(
+            "SELECT COLUMN_NAME, COLUMN_TYPE, COLUMN_KEY, EXTRA "
+            "FROM information_schema.columns "
+            "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION",
+            (source_db, source_table))
+        cols = [{"name": r[0], "type": r[1], "key": r[2], "extra": r[3] or ""} for r in cur.fetchall()]
+        cur.execute(
+            "SELECT COLUMN_NAME FROM information_schema.key_column_usage "
+            "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s AND CONSTRAINT_NAME='PRIMARY' "
+            "ORDER BY ORDINAL_POSITION", (source_db, source_table))
+        pk = [r[0] for r in cur.fetchall()]
+        cur.close()
+        myconn.close()
+
+    elif source_type == "teradata":
+        import teradatasql
+        td_conn = teradatasql.connect(
+            host=str(profile["HOST"]),
+            user=str(profile["USERNAME"]),
+            password=str(password),
+            logmech=profile.get("LOGMECH", "TD2"))
+        cur = td_conn.cursor()
+        cur.execute(
+            "SELECT TRIM(ColumnName), TRIM(ColumnType), TRIM(ColumnFormat) "
+            "FROM DBC.ColumnsV "
+            "WHERE UPPER(DatabaseName) = UPPER(?) AND UPPER(TableName) = UPPER(?) "
+            "ORDER BY ColumnId", (source_db, source_table))
+        cols = [{"name": r[0], "type": r[1], "key": "", "extra": r[2] or ""} for r in cur.fetchall()]
+        cur.execute(
+            "SELECT TRIM(ColumnName) FROM DBC.IndicesV "
+            "WHERE UPPER(DatabaseName) = UPPER(?) AND UPPER(TableName) = UPPER(?) "
+            "AND IndexType = 'P' ORDER BY ColumnPosition", (source_db, source_table))
+        pk = [r[0] for r in cur.fetchall()]
+        cur.close()
+        td_conn.close()
+
+    elif source_type == "oracle":
+        import oracledb
+        extras = profile.get("EXTRA_PARAMS") or {}
+        if isinstance(extras, str):
+            try:
+                extras = json.loads(extras)
+            except (ValueError, TypeError):
+                extras = {}
+        service_name = extras.get("service_name", "")
+        dsn = f"{profile.get('HOST', 'localhost')}:{profile.get('PORT', 1521)}/{service_name}"
+        ora_conn = oracledb.connect(user=str(profile.get("USERNAME", "")),
+                                    password=str(password), dsn=dsn)
+        cur = ora_conn.cursor()
+        cur.execute(
+            "SELECT COLUMN_NAME, DATA_TYPE, DATA_LENGTH, DATA_PRECISION, DATA_SCALE, NULLABLE "
+            "FROM ALL_TAB_COLUMNS WHERE OWNER = UPPER(:1) AND TABLE_NAME = UPPER(:2) "
+            "ORDER BY COLUMN_ID", (source_db, source_table))
+        cols = [{"name": r[0], "type": f"{r[1]}({r[3]},{r[4]})" if r[3] else f"{r[1]}({r[2]})",
+                 "key": "", "extra": f"nullable={r[5]}"} for r in cur.fetchall()]
+        cur.execute(
+            "SELECT cols.COLUMN_NAME FROM ALL_CONS_COLUMNS cols "
+            "JOIN ALL_CONSTRAINTS cons ON cons.CONSTRAINT_NAME = cols.CONSTRAINT_NAME "
+            "AND cons.OWNER = cols.OWNER "
+            "WHERE cons.CONSTRAINT_TYPE = 'P' AND cons.OWNER = UPPER(:1) "
+            "AND cons.TABLE_NAME = UPPER(:2) ORDER BY cols.POSITION",
+            (source_db, source_table))
+        pk = [r[0] for r in cur.fetchall()]
+        cur.close()
+        ora_conn.close()
+
+    elif source_type == "mssql":
+        import pyodbc
+        extras = profile.get("EXTRA_PARAMS") or {}
+        if isinstance(extras, str):
+            try:
+                extras = json.loads(extras)
+            except (ValueError, TypeError):
+                extras = {}
+        driver = extras.get("driver", "ODBC Driver 18 for SQL Server")
+        host = profile.get("HOST", "")
+        port = profile.get("PORT", 1433)
+        source_schema = st.session_state.get("_mssql_source_schema", "dbo")
+        conn_str = (
+            f"DRIVER={{{driver}}};SERVER={host},{port};"
+            f"DATABASE={source_db};"
+            f"UID={profile.get('USERNAME', '')};PWD={password};"
+            "Encrypt=yes;TrustServerCertificate=yes;"
+        )
+        mssql_conn = pyodbc.connect(conn_str)
+        cur = mssql_conn.cursor()
+        cur.execute(
+            "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.CHARACTER_MAXIMUM_LENGTH, "
+            "c.NUMERIC_PRECISION, c.NUMERIC_SCALE, c.IS_NULLABLE "
+            "FROM INFORMATION_SCHEMA.COLUMNS c "
+            "WHERE c.TABLE_SCHEMA = ? AND c.TABLE_NAME = ? "
+            "ORDER BY c.ORDINAL_POSITION", (source_schema, source_table))
+        cols = [{"name": r[0],
+                 "type": f"{r[1]}({r[3]},{r[4]})" if r[3] else f"{r[1]}({r[2]})" if r[2] else r[1],
+                 "key": "", "extra": f"nullable={r[5]}"} for r in cur.fetchall()]
+        cur.execute(
+            "SELECT ccu.COLUMN_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc "
+            "JOIN INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE ccu "
+            "ON tc.CONSTRAINT_NAME = ccu.CONSTRAINT_NAME "
+            "WHERE tc.TABLE_SCHEMA = ? AND tc.TABLE_NAME = ? "
+            "AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY' "
+            "ORDER BY ccu.COLUMN_NAME", (source_schema, source_table))
+        pk = [r[0] for r in cur.fetchall()]
+        cur.close()
+        mssql_conn.close()
+
+    if not cols:
+        return {"json": None, "raw": f"Could not retrieve columns for {source_db}.{source_table}"}
+
+    # ── Build AI prompt ──────────────────────────────────────────────────────
     cols_txt = "\n".join(f"- {c['name']} {c['type']} key={c['key']} extra={c['extra']}" for c in cols)
+
+    # Build fully-qualified source table name for the prompt
+    if source_type == "mssql":
+        source_schema_name = st.session_state.get("_mssql_source_schema", "dbo")
+        fq_table = f"{source_db}.{source_schema_name}.{source_table}"
+    else:
+        fq_table = f"{source_db}.{source_table}"
+
     prompt = (
-        "You are a data migration assistant for a MySQL->Snowflake replication tool.\n"
-        f"Source table: {source_db}.{source_table}\n"
+        f"You are a data migration assistant for a {source_type.upper()}->Snowflake replication tool.\n"
+        f"Source table: {fq_table}\n"
         f"Primary key: {pk or 'NONE'}\n"
         f"Columns:\n{cols_txt}\n\n"
-        "Recommend load settings. Rules: use 'incremental' only if there is a "
-        "reliable cursor — a timestamp column that updates on change (watermark_type "
-        "'time') OR a monotonic AUTO_INCREMENT integer PK (watermark_type 'id', "
-        "INSERTS ONLY). Otherwise 'full'. merge_keys = full uniqueness grain.\n"
-        "Respond with ONLY a JSON object: load_type, watermark_col, watermark_type, "
-        "merge_keys, partition_col, rationale (one sentence).")
+        "Recommend migration settings. Rules:\n"
+        "- load_type: 'incremental' only if there is a reliable cursor (timestamp col that "
+        "updates on change → watermark_type='time', OR monotonic auto-increment PK → "
+        "watermark_type='id', INSERTS ONLY). Otherwise 'full'.\n"
+        "- merge_keys: full uniqueness grain for MERGE/dedupe (array of column names).\n"
+        "- partition_col: best column for parallel extraction (usually the PK).\n"
+        "- scd_type: 0=append-only, 1=upsert (MERGE), 2=slowly-changing-dimension history.\n"
+        "- filter_condition: suggest a useful filter only if obvious (e.g., active records, "
+        "recent date range). Otherwise null.\n"
+        "- trim: true if source likely has padded CHAR fields (Teradata), false otherwise.\n\n"
+        "Respond with ONLY a JSON object with these keys: "
+        "load_type, watermark_col, watermark_type, merge_keys, partition_col, "
+        "scd_type, filter_condition, trim, rationale (one sentence).")
 
     from utils.shared import cortex_complete
     raw = cortex_complete(prompt, feature="config", conn=sf_conn)
@@ -447,16 +661,52 @@ def _render_add_table_dialog(cur, conn, profile_name: str, default_schema: str |
         target_table = st.text_input("Target table (Snowflake)",
                                      help="Defaults to UPPER(source table) if blank",
                                      key="dlg_add_tgt")
+
+        # AI Recommend button — auto-fills load type, watermark, merge keys
+        from utils.shared import ai_enabled
+        if ai_enabled() and source_db.strip() and source_table.strip():
+            if st.button("🤖 AI Recommend Settings", key="dlg_ai_rec", use_container_width=True):
+                with st.spinner("Asking AI Gateway..."):
+                    # Fetch profile dict for source connection
+                    _prof_cur = conn.cursor()
+                    _prof = connection_manager.get_profile(_prof_cur, profile_name)
+                    _prof_cur.close()
+                    if _prof:
+                        rec = _ai_recommend(source_db.strip(), source_table.strip(),
+                                            profile=_prof, sf_conn=conn)
+                        if rec.get("json"):
+                            st.session_state["_ai_rec"] = rec["json"]
+                        else:
+                            st.warning(f"AI could not parse recommendation:\n{rec.get('raw', '')}")
+                    else:
+                        st.error(f"Profile `{profile_name}` not found.")
+            # Apply AI recommendations to form defaults
+            if "_ai_rec" in st.session_state:
+                ai_rec = st.session_state["_ai_rec"]
+                st.success(f"🤖 AI: {ai_rec.get('rationale', '')}")
+
+        ai_rec = st.session_state.get("_ai_rec", {})
         c3, c4 = st.columns(2)
-        primary_key = c3.text_input("Primary key", key="dlg_add_pk")
-        watermark_col = c4.text_input("Watermark column (optional)", key="dlg_add_wm")
+        primary_key = c3.text_input("Primary key", value=ai_rec.get("partition_col") or "",
+                                    key="dlg_add_pk")
+        watermark_col = c4.text_input("Watermark column (optional)",
+                                      value=ai_rec.get("watermark_col") or "",
+                                      key="dlg_add_wm")
         merge_keys_raw = st.text_input(
             "Merge keys (composite, comma-separated — blank = primary key)",
+            value=", ".join(ai_rec.get("merge_keys") or []) if isinstance(ai_rec.get("merge_keys"), list) else (ai_rec.get("merge_keys") or ""),
             key="dlg_add_mk",
             help="Full uniqueness grain for MERGE/dedupe, e.g. EMP_NO, FROM_DATE")
         c5, c6 = st.columns(2)
-        load_type = c5.selectbox("Load type", ["full", "incremental"], key="dlg_add_lt")
-        wm_type = c6.selectbox("Watermark type", ["auto", "time", "id"], key="dlg_add_wt",
+        ai_lt = ai_rec.get("load_type", "full")
+        load_type = c5.selectbox("Load type", ["full", "incremental"],
+                                 index=["full", "incremental"].index(ai_lt) if ai_lt in ["full", "incremental"] else 0,
+                                 key="dlg_add_lt")
+        wm_type_options = ["auto", "time", "id"]
+        ai_wt = ai_rec.get("watermark_type", "auto")
+        wm_type = c6.selectbox("Watermark type", wm_type_options,
+                               index=wm_type_options.index(ai_wt) if ai_wt in wm_type_options else 0,
+                               key="dlg_add_wt",
                                help="auto = detect · time = timestamp · id = monotonic PK")
         c7, c8 = st.columns(2)
         reconcile = c7.checkbox("Reconcile deletes", key="dlg_add_rec")
@@ -465,17 +715,39 @@ def _render_add_table_dialog(cur, conn, profile_name: str, default_schema: str |
         # SCD Type + Filter + Storage
         c9, c10 = st.columns([1, 3])
         scd_labels_map = {0: "0 — Append", 1: "1 — Upsert", 2: "2 — History"}
-        scd_type = c9.selectbox("SCD Type", [0, 1, 2], index=1,
+        ai_scd = ai_rec.get("scd_type", 1)
+        if isinstance(ai_scd, str):
+            ai_scd = int(ai_scd) if ai_scd.isdigit() else 1
+        scd_type = c9.selectbox("SCD Type", [0, 1, 2],
+                                index=[0, 1, 2].index(ai_scd) if ai_scd in [0, 1, 2] else 1,
                                 format_func=lambda x: scd_labels_map[x],
                                 key="dlg_add_scd",
                                 help="0=Append, 1=Upsert (MERGE), 2=History (versioned)")
         filter_condition = c10.text_input("Filter Condition", key="dlg_add_filter",
+                                          value=ai_rec.get("filter_condition") or "",
                                           placeholder="e.g. region = 'US'",
                                           help="Static WHERE clause applied every run")
         c11, c12 = st.columns(2)
         storage_type = c11.selectbox("Storage", ["internal_stage", "s3", "azure"],
                                      key="dlg_add_storage")
         partition_num = c12.number_input("Partitions", 1, 32, 8, key="dlg_add_parts")
+
+        # Advanced settings row: Partition Col, Delimiter, Trim
+        c13, c14, c15 = st.columns([2, 1, 1])
+        partition_col = c13.text_input("Partition Column",
+                                       value=ai_rec.get("partition_col") or "",
+                                       key="dlg_add_partcol",
+                                       placeholder="e.g. ID",
+                                       help="Column for parallel extraction (usually the PK)")
+        delimiter = c14.text_input("Delimiter",
+                                   value=",",
+                                   key="dlg_add_delim",
+                                   help="Field delimiter for CSV export (Teradata TPT, MSSQL BCP)")
+        ai_trim = ai_rec.get("trim", False)
+        trim_cols = c15.checkbox("Trim whitespace",
+                                 value=bool(ai_trim),
+                                 key="dlg_add_trim",
+                                 help="Trim padded CHAR fields during export (recommended for Teradata)")
 
         # External stage picker (shown only for s3/azure)
         storage_path = ""
@@ -533,11 +805,13 @@ def _render_add_table_dialog(cur, conn, profile_name: str, default_schema: str |
                     "MERGE_KEYS": mk_u,
                     "WATERMARK_COL": wm_u,
                     "WATERMARK_TYPE": wm_type_val,
-                    "PARTITION_COL": pk_u,
+                    "PARTITION_COL": partition_col.strip().upper() or pk_u,
                     "PARTITION_NUM": partition_num,
                     "ROWS_PER_FILE": 1000000,
                     "STORAGE_TYPE": storage_type,
                     "STORAGE_PATH": storage_path.strip() or None,
+                    "DELIMITER": delimiter.strip() or ",",
+                    "TRIM": trim_cols,
                     "EXECUTION_MODE": "FULL",
                     "RECONCILE": reconcile,
                     "ACTIVE": active,
@@ -746,6 +1020,11 @@ def render(conn):
             except Exception as e:
                 st.error(f"Discovery failed: {e}")
                 entries = []
+        # AI enrichment: if AI Assist is on, enhance recommendations
+        from utils.shared import ai_enabled
+        if entries and ai_enabled():
+            with st.spinner("🤖 AI analyzing table structures..."):
+                entries = _ai_enrich_discovery(entries, sel_profile, sel_schema, conn)
         st.session_state["_discovered"] = entries
         st.session_state["_discovered_schema"] = sel_schema
 

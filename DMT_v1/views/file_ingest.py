@@ -32,8 +32,8 @@ def render(conn):
     cur = conn.cursor()
 
     # Tabs
-    tab_jobs, tab_add, tab_upload, tab_history = st.tabs([
-        "Active Jobs", "Add / Edit Job", "Upload & Ingest", "Run History"
+    tab_jobs, tab_add, tab_upload, tab_stages, tab_history = st.tabs([
+        "Active Jobs", "Add / Edit Job", "Upload & Ingest", "Stages & Integrations", "Run History"
     ])
 
     # ── Tab 1: Active Jobs ────────────────────────────────────────────────────
@@ -240,6 +240,7 @@ def render(conn):
             "Job Name *",
             value=editing["JOB_NAME"] if editing else "",
             placeholder="daily_sales_feed", key="fi_job_name")
+        id2.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         active = id2.checkbox(
             "Active",
             value=editing["ACTIVE"] if editing else True, key="fi_active")
@@ -287,12 +288,35 @@ def render(conn):
                 value=editing.get("STAGE_NAME", "") if editing else "",
                 placeholder="ANALYTICS.RAW.S3_STAGE", key="fi_stage_name")
 
-        cloud_provider = s2.selectbox(
-            "Cloud Provider",
-            ["S3", "AZURE", "GCS", "INTERNAL"],
-            index=["S3", "AZURE", "GCS", "INTERNAL"].index(
-                editing.get("CLOUD_PROVIDER", "S3")) if editing and editing.get("CLOUD_PROVIDER") in ["S3", "AZURE", "GCS", "INTERNAL"] else 0,
-            key="fi_cloud_provider")
+        # Auto-detect cloud provider from stage URL
+        cloud_provider = "INTERNAL"
+        if stage_name and isinstance(stage_name, str) and stage_name.strip():
+            try:
+                cur.execute(f"DESCRIBE STAGE {stage_name}")
+                desc_rows = cur.fetchall()
+                for row in desc_rows:
+                    prop = str(row[0]).upper() if row[0] else ""
+                    val = str(row[1]).lower() if row[1] else ""
+                    if "URL" in prop or "STAGE_LOCATION" in prop:
+                        if "s3://" in val:
+                            cloud_provider = "S3"
+                        elif "azure://" in val or "blob.core" in val:
+                            cloud_provider = "AZURE"
+                        elif "gcs://" in val:
+                            cloud_provider = "GCS"
+                        break
+            except Exception:
+                pass
+        provider_colors = {"S3": "#FF9900", "AZURE": "#0078D4", "GCS": "#4285F4", "INTERNAL": "#34D058"}
+        s2.markdown(f"<div style='height:28px'></div>", unsafe_allow_html=True)
+        s2.markdown(
+            f'<div style="background:#0F1B2D;border:1px solid #263245;border-radius:6px;'
+            f'padding:8px 14px;text-align:center;">'
+            f'<span style="font-size:.68rem;letter-spacing:1px;text-transform:uppercase;'
+            f'color:#7E96B0;">Provider</span><br>'
+            f'<span style="font-size:.95rem;font-weight:700;color:{provider_colors.get(cloud_provider, "#F0F4F8")}">'
+            f'{cloud_provider}</span></div>',
+            unsafe_allow_html=True)
 
         s3, s4 = st.columns(2)
         cloud_path = s3.text_input(
@@ -311,6 +335,7 @@ def render(conn):
             index=["CSV", "PARQUET", "JSON", "AVRO"].index(
                 editing.get("FILE_TYPE", "CSV")) if editing else 0,
             key="fi_file_type")
+        s6.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         date_partition = s6.checkbox(
             "Date-partitioned path",
             value=editing.get("DATE_PARTITION", False) if editing else False,
@@ -415,6 +440,7 @@ def render(conn):
             index=["APPEND", "OVERWRITE", "MERGE"].index(
                 editing.get("LOAD_MODE", "APPEND")) if editing else 0,
             key="fi_load_mode")
+        m2.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         auto_create = m2.checkbox(
             "Auto-create table (if not exists)",
             value=not table_exists,
@@ -769,7 +795,8 @@ def render(conn):
                                 "SKIP_HEADER": int(up_skip),
                                 "ON_ERROR": "ABORT_STATEMENT",
                             }
-                            result = run_ingestion(conn, ingest_config)
+                            result = run_ingestion(conn, ingest_config,
+                                                   skip_config_update=True)
 
                         if result["STATUS"] == "success":
                             st.success(
@@ -793,7 +820,100 @@ def render(conn):
                 'Files are uploaded to an internal Snowflake stage — no cloud storage needed'
                 '</div></div>', unsafe_allow_html=True)
 
-    # ── Tab 4: Run History ────────────────────────────────────────────────────
+    # ── Tab 4: Stages & Integrations ────────────────────────────────────────────
+    with tab_stages:
+        from utils.ui_theme import section_card_start as _scs, section_card_end as _sce
+
+        st.markdown("#### Stages & Storage Integrations")
+        st.caption("View available storage integrations and external stages in your account.")
+
+        # ── Storage Integrations ─────────────────────────────────────────────
+        _scs("Storage Integrations", "🔗", border_color="#a78bfa")
+        try:
+            cur.execute("SHOW STORAGE INTEGRATIONS")
+            si_rows = cur.fetchall()
+            si_cols = [d[0] for d in cur.description]
+            if si_rows:
+                si_df = pd.DataFrame(si_rows, columns=si_cols)
+                display_si = [c for c in ["name", "type", "enabled", "comment"]
+                              if c in si_df.columns]
+                st.dataframe(si_df[display_si] if display_si else si_df,
+                             use_container_width=True, hide_index=True)
+                st.caption(f"{len(si_rows)} storage integration(s) found")
+            else:
+                st.info("No storage integrations found in this account.")
+        except Exception as e:
+            st.warning(f"Cannot list storage integrations: {e}")
+            st.caption("Requires ACCOUNTADMIN or appropriate privileges.")
+        _sce()
+
+        # ── External Stages ──────────────────────────────────────────────────
+        _scs("External & Internal Stages", "📦", border_color="#58A6FF")
+        try:
+            cur.execute("SHOW STAGES IN ACCOUNT")
+            stg_rows = cur.fetchall()
+            stg_cols = [d[0] for d in cur.description]
+            if stg_rows:
+                stg_df = pd.DataFrame(stg_rows, columns=stg_cols)
+                display_stg = [c for c in ["name", "database_name", "schema_name",
+                                           "url", "type", "cloud", "owner"]
+                               if c in stg_df.columns]
+
+                # Paginate stages
+                STG_PER_PAGE = 15
+                total_stg = len(stg_df)
+                total_stg_pages = max(1, (total_stg + STG_PER_PAGE - 1) // STG_PER_PAGE)
+                stg_page = st.session_state.get("fi_stg_page", 0)
+                stg_page = min(stg_page, total_stg_pages - 1)
+                start_s = stg_page * STG_PER_PAGE
+                end_s = min(start_s + STG_PER_PAGE, total_stg)
+
+                st.dataframe(
+                    (stg_df[display_stg] if display_stg else stg_df).iloc[start_s:end_s],
+                    use_container_width=True, hide_index=True)
+                st.caption(f"Showing {start_s + 1}–{end_s} of {total_stg} stage(s)")
+
+                if total_stg_pages > 1:
+                    sp1, sp2, sp3 = st.columns([1, 2, 1])
+                    sp1.button("◀ Prev", key="fi_stg_prev",
+                               disabled=(stg_page == 0),
+                               on_click=lambda: st.session_state.update(fi_stg_page=stg_page - 1))
+                    sp2.markdown(
+                        f"<div style='text-align:center;padding-top:6px;color:{TXT_LABEL}'>"
+                        f"Page {stg_page + 1} of {total_stg_pages}</div>",
+                        unsafe_allow_html=True)
+                    sp3.button("Next ▶", key="fi_stg_next",
+                               disabled=(stg_page >= total_stg_pages - 1),
+                               on_click=lambda: st.session_state.update(fi_stg_page=stg_page + 1))
+            else:
+                st.info("No stages found in this account.")
+        except Exception as e:
+            st.warning(f"Cannot list stages: {e}")
+        _sce()
+
+        # ── Create Internal Stage (quick action) ─────────────────────────────
+        _scs("Quick Create — Internal Stage", "➕", border_color=ST_SUCCESS)
+        st.caption("Create a simple internal stage for file uploads (no cloud integration needed).")
+        cs1, cs2, cs3 = st.columns(3)
+        new_stg_db = cs1.text_input("Database", value="HISTLOAD_DB", key="fi_new_stg_db")
+        new_stg_schema = cs2.text_input("Schema", value="META", key="fi_new_stg_schema")
+        new_stg_name = cs3.text_input("Stage Name", placeholder="MY_UPLOAD_STAGE", key="fi_new_stg_name")
+
+        if st.button("Create Stage", key="fi_create_stg", use_container_width=True):
+            if new_stg_name.strip():
+                fqn = f"{new_stg_db.strip()}.{new_stg_schema.strip()}.{new_stg_name.strip().upper()}"
+                try:
+                    cur.execute(f"CREATE STAGE IF NOT EXISTS {fqn}")
+                    conn.commit()
+                    st.success(f"Stage `{fqn}` created successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to create stage: {e}")
+            else:
+                st.error("Stage Name is required.")
+        _sce()
+
+    # ── Tab 5: Run History ────────────────────────────────────────────────────
     with tab_history:
         logs = file_ingest_config.get_recent_logs(cur, limit=100)
 

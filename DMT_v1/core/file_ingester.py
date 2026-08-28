@@ -270,8 +270,14 @@ def _execute_merge(cur, config: dict, target_fqn: str, stage_path: str,
     return files_loaded, rows_merged
 
 
-def run_ingestion(sf_conn, config: dict, batch_id: str = None) -> dict:
-    """Execute a single file ingestion job."""
+def run_ingestion(sf_conn, config: dict, batch_id: str = None,
+                  skip_config_update: bool = False) -> dict:
+    """Execute a single file ingestion job.
+
+    Args:
+        skip_config_update: If True, skip updating FILE_INGESTION_CONFIG status
+                           (used for ad-hoc uploads that don't have a config row).
+    """
     batch_id = batch_id or uuid.uuid4().hex[:12]
     config_id = config["CONFIG_ID"]
     job_name = config.get("JOB_NAME", "unknown")
@@ -374,10 +380,11 @@ def run_ingestion(sf_conn, config: dict, batch_id: str = None) -> dict:
         print(f"   [{job_name}] loaded {total_rows:,} rows from "
               f"{files_loaded} file(s)")
 
-        # Step 5: Update config tracking
-        file_ingest_config.update_run_status(
-            cur, config_id, status=result["STATUS"],
-            file_count=files_loaded, row_count=total_rows)
+        # Step 5: Update config tracking (skip for ad-hoc uploads)
+        if not skip_config_update:
+            file_ingest_config.update_run_status(
+                cur, config_id, status=result["STATUS"],
+                file_count=files_loaded, row_count=total_rows)
         sf_conn.commit()
 
     except Exception as e:
@@ -387,8 +394,9 @@ def run_ingestion(sf_conn, config: dict, batch_id: str = None) -> dict:
         print(f"   [{job_name}] FAILED: {e}")
 
         try:
-            file_ingest_config.update_run_status(
-                cur, config_id, status="failed", error=str(e))
+            if not skip_config_update:
+                file_ingest_config.update_run_status(
+                    cur, config_id, status="failed", error=str(e))
             sf_conn.commit()
         except Exception:
             pass

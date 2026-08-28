@@ -143,6 +143,9 @@ def _infer_and_create_table(cur, config: dict, stage_path: str,
             f"INFER_SCHEMA returned no columns from {stage_path} "
             f"with pattern '{pattern}'. Check stage path and file format.")
 
+    # Collect inferred column names (for COPY INTO targeting)
+    inferred_col_names = [str(row[0]) for row in columns]
+
     col_defs = []
     for col_name, col_type, nullable in columns:
         null_str = "" if nullable else " NOT NULL"
@@ -157,12 +160,13 @@ def _infer_and_create_table(cur, config: dict, stage_path: str,
 
     cur.execute(ddl)
     print(f"   table created: {target_fqn} ({len(columns)} cols + audit)")
-    return target_fqn
+    return target_fqn, inferred_col_names
 
 
 def _build_copy_into(config: dict, target_fqn: str, stage_path: str,
-                     pattern: str, fmt_name: str) -> str:
-    """Build the COPY INTO statement."""
+                     pattern: str, fmt_name: str,
+                     columns: list[str] | None = None) -> str:
+    """Build the COPY INTO statement. If columns provided, targets only those columns."""
     on_error = config.get("ON_ERROR") or "ABORT_STATEMENT"
     match_by = config.get("MATCH_BY_COLUMN_NAME")
     purge = config.get("PURGE_FILES", False)
@@ -170,8 +174,15 @@ def _build_copy_into(config: dict, target_fqn: str, stage_path: str,
     file_type = (config.get("FILE_TYPE") or "CSV").upper()
     safe_pattern = _sanitize_sql_string(pattern)
 
+    # If column list provided, target only data columns (skip audit cols)
+    if columns and file_type == "CSV":
+        col_list = ", ".join(f'"{c}"' for c in columns)
+        target = f"{target_fqn} ({col_list})"
+    else:
+        target = target_fqn
+
     parts = [
-        f"COPY INTO {target_fqn}",
+        f"COPY INTO {target}",
         f"FROM {stage_path}",
         f"FILE_FORMAT = (FORMAT_NAME = '{fmt_name}')",
         f"PATTERN = '{safe_pattern}'",
@@ -332,8 +343,10 @@ def run_ingestion(sf_conn, config: dict, batch_id: str = None,
 
         # Step 3: Create table if needed
         table_created = False
+        inferred_columns = None
         if not config.get("TABLE_EXISTS", True):
-            _infer_and_create_table(cur, config, stage_path, pattern, fmt_name)
+            _, inferred_columns = _infer_and_create_table(
+                cur, config, stage_path, pattern, fmt_name)
             table_created = True
             result["TABLE_CREATED"] = True
 
@@ -350,7 +363,8 @@ def run_ingestion(sf_conn, config: dict, batch_id: str = None,
             swap_table = f"{target_fqn}__DMT_SWAP"
             cur.execute(f"CREATE OR REPLACE TABLE {swap_table} LIKE {target_fqn}")
             # COPY INTO swap table
-            copy_sql = _build_copy_into(config, swap_table, stage_path, pattern, fmt_name)
+            copy_sql = _build_copy_into(config, swap_table, stage_path, pattern,
+                                        fmt_name, columns=inferred_columns)
             cur.execute(copy_sql)
             copy_results = cur.fetchall()
             files_loaded, total_rows = _parse_copy_results(cur, copy_results, swap_table)
@@ -365,7 +379,8 @@ def run_ingestion(sf_conn, config: dict, batch_id: str = None,
 
         else:
             # APPEND (default): straight COPY INTO
-            copy_sql = _build_copy_into(config, target_fqn, stage_path, pattern, fmt_name)
+            copy_sql = _build_copy_into(config, target_fqn, stage_path, pattern,
+                                        fmt_name, columns=inferred_columns)
             print(f"   [{job_name}] running COPY INTO {target_fqn}...")
             cur.execute(copy_sql)
             copy_results = cur.fetchall()

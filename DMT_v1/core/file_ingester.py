@@ -129,14 +129,12 @@ def _infer_and_create_table(cur, config: dict, stage_path: str,
     cur.execute(f"CREATE SCHEMA IF NOT EXISTS "
                 f"{config['TARGET_DB']}.{config.get('TARGET_SCHEMA', 'RAW')}")
 
-    # INFER_SCHEMA — omit FILES param entirely to scan all matching files
-    safe_pattern = _sanitize_sql_string(pattern)
+    # INFER_SCHEMA — scans files at the location to detect schema
     cur.execute(
         f"SELECT COLUMN_NAME, TYPE, NULLABLE\n"
         f"FROM TABLE(INFER_SCHEMA(\n"
         f"  LOCATION => '{stage_path}'\n"
         f"  , FILE_FORMAT => '{fmt_name}'\n"
-        f"  , FILE_PATTERN => '{safe_pattern}'\n"
         f"))")
     columns = cur.fetchall()
 

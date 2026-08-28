@@ -472,7 +472,7 @@ def render_header():
         f'</div></div>', unsafe_allow_html=True)
 
     # ── Source selector + AI (only for Database Migration pages) ────────────────
-    _DB_MIGRATION_PAGES = {"Overview", "Pipeline Setup", "Schema Mapping", "Execute", "Observability", "Sources"}
+    _DB_MIGRATION_PAGES = {"Overview", "Pipeline Setup", "Schema Mapping", "Execute", "Observability"}
     _current = st.session_state.get("current_page", "Overview")
 
     if _current in _DB_MIGRATION_PAGES:

@@ -215,6 +215,10 @@ def render(conn):
 
     # ── Tab 2: Add / Edit Job ─────────────────────────────────────────────────
     with tab_add:
+        from utils.ui_theme import (section_card_start, section_card_end,
+                                    info_box, ST_PENDING, ST_SUCCESS, TA_ORANGE,
+                                    BORDER, TA_NAVY, TXT_SECONDARY as _TXT_SEC)
+
         st.markdown("#### Configure File Ingestion Job")
 
         # Select existing to edit, or create new
@@ -227,21 +231,26 @@ def render(conn):
         if edit_sel != "-- New Job --":
             editing = next((c for c in existing if c["JOB_NAME"] == edit_sel), None)
 
-        # No st.form — allows dynamic updates when fields change
-        col1, col2 = st.columns(2)
-        job_name = col1.text_input(
+        # ═══════════════════════════════════════════════════════════════════════
+        # Section 1: JOB IDENTITY
+        # ═══════════════════════════════════════════════════════════════════════
+        section_card_start("Job Identity", "📋", border_color=TA_ORANGE)
+        id1, id2 = st.columns([3, 1])
+        job_name = id1.text_input(
             "Job Name *",
             value=editing["JOB_NAME"] if editing else "",
             placeholder="daily_sales_feed", key="fi_job_name")
-        active = col2.checkbox(
+        active = id2.checkbox(
             "Active",
             value=editing["ACTIVE"] if editing else True, key="fi_active")
+        section_card_end()
 
-        # ── Source (Cloud Files) ─────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("**Source (Cloud Files)**")
+        # ═══════════════════════════════════════════════════════════════════════
+        # Section 2: SOURCE
+        # ═══════════════════════════════════════════════════════════════════════
+        section_card_start("Source (Cloud Files)", "📂", border_color=ST_PENDING)
 
-        # Dynamic stage picker — show available stages from Snowflake
+        # Dynamic stage picker
         s1, s2 = st.columns(2)
         try:
             cur.execute("SHOW STAGES IN ACCOUNT")
@@ -293,7 +302,7 @@ def render(conn):
         file_pattern = s4.text_input(
             "File Pattern (regex) *",
             value=editing.get("FILE_PATTERN", "") if editing else "",
-            placeholder=".*sales.*\\.csv", key="fi_file_pattern")
+            placeholder=r".*sales.*\.csv", key="fi_file_pattern")
 
         s5, s6 = st.columns(2)
         file_type = s5.selectbox(
@@ -310,13 +319,16 @@ def render(conn):
         date_format = ""
         if date_partition:
             date_format = st.text_input(
-                "Date Format (Python strftime)",
+                "Date Format (strftime)",
                 value=editing.get("DATE_FORMAT", "%Y%m%d") if editing else "%Y%m%d",
                 placeholder="%Y%m%d", key="fi_date_fmt")
 
-        # ── Target (Snowflake) — Dynamic DB/Schema/Table ─────────────────────
-        st.markdown("---")
-        st.markdown("**Target (Snowflake)**")
+        section_card_end()
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # Section 3: TARGET
+        # ═══════════════════════════════════════════════════════════════════════
+        section_card_start("Target (Snowflake)", "🎯", border_color=ST_SUCCESS)
 
         # Fetch available databases
         try:
@@ -395,19 +407,20 @@ def render(conn):
                                          placeholder="DAILY_SALES", key="fi_tgt_table_txt")
             table_exists = False
 
-        t4, t5 = st.columns(2)
-        load_mode = t4.selectbox(
+        # Load mode + auto-create
+        m1, m2 = st.columns(2)
+        load_mode = m1.selectbox(
             "Load Mode",
             ["APPEND", "OVERWRITE", "MERGE"],
             index=["APPEND", "OVERWRITE", "MERGE"].index(
                 editing.get("LOAD_MODE", "APPEND")) if editing else 0,
             key="fi_load_mode")
-        auto_create = t5.checkbox(
+        auto_create = m2.checkbox(
             "Auto-create table (if not exists)",
             value=not table_exists,
             key="fi_auto_create")
 
-        # Merge keys (shown dynamically when MERGE selected)
+        # Merge keys (shown only when MERGE selected)
         merge_keys_input = ""
         if load_mode == "MERGE":
             merge_keys_input = st.text_input(
@@ -417,58 +430,96 @@ def render(conn):
                 help="Primary key column(s) for MERGE deduplication",
                 key="fi_merge_keys")
 
-        # ── Format Options (shown dynamically for CSV) ───────────────────────
-        if file_type == "CSV":
-            st.markdown("---")
-            st.markdown("**Format Options** (CSV)")
-            f1, f2, f3, f4 = st.columns(4)
-            delimiter = f1.text_input("Delimiter",
-                                      value=editing.get("FIELD_DELIMITER", ",") if editing else ",",
-                                      key="fi_delim")
-            enclosed = f2.text_input("Enclosed By",
-                                     value=editing.get("FIELD_ENCLOSED_BY", '"') if editing else '"',
-                                     key="fi_enclosed")
-            escape = f3.text_input("Escape Char",
-                                   value=editing.get("ESCAPE_CHARACTER", "\\") if editing else "\\",
-                                   key="fi_escape")
-            skip_header = f4.number_input("Skip Header",
-                                          value=int(editing.get("SKIP_HEADER", 1)) if editing else 1,
-                                          min_value=0, max_value=10, key="fi_skip")
-        else:
-            delimiter = ","
-            enclosed = '"'
-            escape = "\\"
-            skip_header = 0
+        # Schema info card (when existing table selected)
+        if table_exists and target_table:
+            try:
+                tgt_fqn = f"{target_db}.{target_schema}.{target_table}"
+                cur.execute(f"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+                            f"WHERE TABLE_CATALOG='{target_db}' AND TABLE_SCHEMA='{target_schema}' "
+                            f"AND TABLE_NAME='{target_table}'")
+                col_count = cur.fetchone()[0] or 0
+                info_box(f"Table `{tgt_fqn}` exists — {col_count} columns", "✅")
+            except Exception:
+                pass
 
-        # ── COPY INTO Options ────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("**COPY INTO Options**")
-        o1, o2 = st.columns(2)
-        on_error = o1.selectbox(
-            "ON_ERROR",
-            ["ABORT_STATEMENT", "CONTINUE", "SKIP_FILE"],
-            index=["ABORT_STATEMENT", "CONTINUE", "SKIP_FILE"].index(
-                editing.get("ON_ERROR", "ABORT_STATEMENT")) if editing else 0,
-            key="fi_on_error")
-        match_by = o2.selectbox(
-            "MATCH_BY_COLUMN_NAME",
-            ["", "CASE_INSENSITIVE", "CASE_SENSITIVE"],
-            index=["", "CASE_INSENSITIVE", "CASE_SENSITIVE"].index(
-                editing.get("MATCH_BY_COLUMN_NAME") or "") if editing else 0,
-            key="fi_match_by")
-        purge = st.checkbox(
-            "Purge files after load",
-            value=editing.get("PURGE_FILES", False) if editing else False,
-            key="fi_purge")
+        section_card_end()
 
-        # ── Save Button ──────────────────────────────────────────────────────
-        st.markdown("---")
+        # ═══════════════════════════════════════════════════════════════════════
+        # Section 4: ADVANCED OPTIONS (collapsed)
+        # ═══════════════════════════════════════════════════════════════════════
+        with st.expander("⚙️ Advanced Options", expanded=False):
+            # CSV Format options
+            if file_type == "CSV":
+                st.markdown(
+                    f'<div style="font-size:.7rem;letter-spacing:1.5px;text-transform:uppercase;'
+                    f'color:{TXT_LABEL};font-weight:600;margin-bottom:8px;">CSV FORMAT</div>',
+                    unsafe_allow_html=True)
+                f1, f2, f3, f4 = st.columns(4)
+                delimiter = f1.text_input("Delimiter",
+                                          value=editing.get("FIELD_DELIMITER", ",") if editing else ",",
+                                          key="fi_delim")
+                enclosed = f2.text_input("Enclosed By",
+                                         value=editing.get("FIELD_ENCLOSED_BY", '"') if editing else '"',
+                                         key="fi_enclosed")
+                escape = f3.text_input("Escape Char",
+                                       value=editing.get("ESCAPE_CHARACTER", "\\") if editing else "\\",
+                                       key="fi_escape")
+                skip_header = f4.number_input("Skip Header",
+                                              value=int(editing.get("SKIP_HEADER", 1)) if editing else 1,
+                                              min_value=0, max_value=10, key="fi_skip")
+            else:
+                delimiter = ","
+                enclosed = '"'
+                escape = "\\"
+                skip_header = 0
+
+            # COPY INTO options
+            st.markdown(
+                f'<div style="font-size:.7rem;letter-spacing:1.5px;text-transform:uppercase;'
+                f'color:{TXT_LABEL};font-weight:600;margin:12px 0 8px 0;">COPY OPTIONS</div>',
+                unsafe_allow_html=True)
+            o1, o2 = st.columns(2)
+            on_error = o1.selectbox(
+                "ON_ERROR",
+                ["ABORT_STATEMENT", "CONTINUE", "SKIP_FILE"],
+                index=["ABORT_STATEMENT", "CONTINUE", "SKIP_FILE"].index(
+                    editing.get("ON_ERROR", "ABORT_STATEMENT")) if editing else 0,
+                key="fi_on_error")
+            match_by = o2.selectbox(
+                "MATCH_BY_COLUMN_NAME",
+                ["", "CASE_INSENSITIVE", "CASE_SENSITIVE"],
+                index=["", "CASE_INSENSITIVE", "CASE_SENSITIVE"].index(
+                    editing.get("MATCH_BY_COLUMN_NAME") or "") if editing else 0,
+                key="fi_match_by")
+            purge = st.checkbox(
+                "Purge files after load",
+                value=editing.get("PURGE_FILES", False) if editing else False,
+                key="fi_purge")
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # Save Button
+        # ═══════════════════════════════════════════════════════════════════════
+        st.markdown('<div style="margin-top:12px;"></div>', unsafe_allow_html=True)
         if st.button("💾 Save Job" if not editing else "💾 Update Job",
                      type="primary", use_container_width=True, key="fi_save_btn"):
-            if not job_name or not stage_name or not file_pattern or not target_db or not target_table:
-                st.error("Please fill all required fields (marked with *)")
-            elif load_mode == "MERGE" and not merge_keys_input.strip():
-                st.error("MERGE mode requires Merge Keys to be specified.")
+            # Validation
+            errors = []
+            if not job_name.strip():
+                errors.append("Job Name is required")
+            if not stage_name or (isinstance(stage_name, str) and not stage_name.strip()):
+                errors.append("Stage Name is required")
+            if not file_pattern.strip():
+                errors.append("File Pattern is required")
+            if not target_db or (isinstance(target_db, str) and not target_db.strip()):
+                errors.append("Target Database is required")
+            if not target_table or (isinstance(target_table, str) and not target_table.strip()):
+                errors.append("Target Table is required")
+            if load_mode == "MERGE" and not merge_keys_input.strip():
+                errors.append("MERGE mode requires Merge Keys")
+
+            if errors:
+                for err in errors:
+                    st.error(f"❌ {err}")
             else:
                 save_data = {
                     "JOB_NAME": job_name.strip(),
@@ -498,8 +549,9 @@ def render(conn):
                     save_data["CONFIG_ID"] = editing["CONFIG_ID"]
                 file_ingest_config.upsert(cur, save_data)
                 conn.commit()
-                st.success(f"Job '{job_name}' saved successfully!")
+                st.success(f"✅ Job '{job_name}' saved successfully!")
                 st.rerun()
+
 
     # ── Tab 3: Upload & Ingest ─────────────────────────────────────────────────
     with tab_upload:

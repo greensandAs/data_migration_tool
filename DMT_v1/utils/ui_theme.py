@@ -115,6 +115,32 @@ def section_header(text: str):
     st.markdown(f'<div class="section-header">{text}</div>', unsafe_allow_html=True)
 
 
+def form_section_start(title: str, icon: str = "", border_color: str = TA_ORANGE):
+    """Open a styled card section for form groups."""
+    st.markdown(
+        f'<div style="background:{TA_NAVY};border:1px solid {BORDER};'
+        f'border-left:4px solid {border_color};border-radius:10px;'
+        f'padding:18px 22px 12px 22px;margin-bottom:16px;">'
+        f'<div style="font-size:.72rem;letter-spacing:2px;text-transform:uppercase;'
+        f'color:{border_color};font-weight:700;margin-bottom:10px;">'
+        f'{icon} {title}</div>',
+        unsafe_allow_html=True)
+
+
+def form_section_end():
+    """Close a styled card section."""
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def info_box(text: str, icon: str = "ℹ️"):
+    """Render a compact info box."""
+    st.markdown(
+        f'<div style="background:#0d1e2e;border:1px solid {ST_PENDING}44;'
+        f'border-radius:6px;padding:8px 14px;font-size:.78rem;color:{TXT_SECONDARY};'
+        f'margin:8px 0;">{icon} {text}</div>',
+        unsafe_allow_html=True)
+
+
 def metric_card(label: str, value, sub: str = "", color: str = TXT_PRIMARY,
                 border_color: str = ""):
     border = f"border-left:4px solid {border_color}" if border_color else ""
@@ -210,3 +236,29 @@ def render_footer():
         f'<p style="text-align:center;color:{TXT_SECONDARY};font-size:0.8rem;">'
         f'Powered by <span style="color:{TA_ORANGE};font-weight:700;">Tiger Analytics</span>'
         f'</p>', unsafe_allow_html=True)
+
+
+def section_card_start(title: str, icon: str = "", border_color: str = TA_ORANGE):
+    """Open a styled card section with title. Content follows in normal Streamlit calls."""
+    st.markdown(
+        f'<div style="background:{TA_NAVY};border:1px solid {BORDER};'
+        f'border-left:4px solid {border_color};border-radius:10px;'
+        f'padding:18px 22px 12px 22px;margin-bottom:16px;">'
+        f'<div style="font-size:.7rem;letter-spacing:2px;text-transform:uppercase;'
+        f'color:{border_color};font-weight:700;margin-bottom:12px;">'
+        f'{icon} {title}</div>',
+        unsafe_allow_html=True)
+
+
+def section_card_end():
+    """Close a styled card section."""
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def info_box(text: str, icon: str = "ℹ️"):
+    """Render a compact info box."""
+    st.markdown(
+        f'<div style="background:{TA_NAVY};border:1px solid {ST_PENDING}33;'
+        f'border-radius:6px;padding:8px 14px;font-size:.78rem;color:{TXT_SECONDARY};">'
+        f'{icon} {text}</div>',
+        unsafe_allow_html=True)

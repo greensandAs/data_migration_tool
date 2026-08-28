@@ -344,10 +344,31 @@ def render(conn):
 
         date_format = ""
         if date_partition:
-            date_format = st.text_input(
-                "Date Format (strftime)",
-                value=editing.get("DATE_FORMAT", "%Y%m%d") if editing else "%Y%m%d",
-                placeholder="%Y%m%d", key="fi_date_fmt")
+            from datetime import datetime as _dt
+            _today = _dt.now()
+            date_format_options = [
+                ("%Y%m%d", f"%Y%m%d → {_today.strftime('%Y%m%d')}"),
+                ("%Y/%m/%d", f"%Y/%m/%d → {_today.strftime('%Y/%m/%d')}"),
+                ("%Y-%m-%d", f"%Y-%m-%d → {_today.strftime('%Y-%m-%d')}"),
+                ("%Y%m%d/%H", f"%Y%m%d/%H → {_today.strftime('%Y%m%d/%H')}"),
+                ("year=%Y/month=%m/day=%d", f"year=%Y/month=%m/day=%d → {_today.strftime('year=%Y/month=%m/day=%d')}"),
+                ("%Y/%m", f"%Y/%m → {_today.strftime('%Y/%m')}"),
+            ]
+            fmt_values = [f[0] for f in date_format_options]
+            fmt_labels = [f[1] for f in date_format_options]
+
+            default_fmt = editing.get("DATE_FORMAT", "%Y%m%d") if editing else "%Y%m%d"
+            if default_fmt in fmt_values:
+                fmt_idx = fmt_values.index(default_fmt)
+            else:
+                fmt_idx = 0
+
+            date_format = st.selectbox(
+                "Date Format",
+                fmt_values,
+                index=fmt_idx,
+                format_func=lambda x: fmt_labels[fmt_values.index(x)],
+                key="fi_date_fmt")
 
         section_card_end()
 
@@ -551,7 +572,6 @@ def render(conn):
                 save_data = {
                     "JOB_NAME": job_name.strip(),
                     "ACTIVE": active,
-                    "CLOUD_PROVIDER": cloud_provider,
                     "STAGE_NAME": stage_name.strip() if isinstance(stage_name, str) else stage_name,
                     "CLOUD_PATH": cloud_path.strip(),
                     "FILE_PATTERN": file_pattern.strip(),

@@ -444,6 +444,13 @@ def source_type_pill(source_type: str) -> str:
 
 def render_header():
     # Header — Gradient banner with MigrateX branding
+    # Get connection info for header display
+    _conn_info = st.session_state.get("_conn_status", (False, {}))
+    _h_ok, _h_info = _conn_info
+    _h_account = _h_info.get("account", "—") if _h_ok else "—"
+    _h_wh = _h_info.get("warehouse", "—") if _h_ok else "—"
+    _h_role = _h_info.get("role", "—") if _h_ok else "—"
+
     st.markdown(
         f'<div class="main-header">'
         f'<div style="background:linear-gradient(135deg, {TA_NAVY} 0%, #1a2940 60%, #0f1f33 100%);'
@@ -452,7 +459,7 @@ def render_header():
         # Accent stripe
         f'<div style="position:absolute;top:0;left:0;width:5px;height:100%;'
         f'background:linear-gradient(180deg, {TA_ORANGE}, #FF6B35);border-radius:10px 0 0 10px;"></div>'
-        # App name
+        # App name + environment info
         f'<div style="display:flex;align-items:center;justify-content:space-between;">'
         f'<div>'
         f'<div style="font-size:1.6rem;font-weight:800;color:#FFFFFF;letter-spacing:-0.5px;">'
@@ -462,10 +469,14 @@ def render_header():
         f'<div style="font-size:.68rem;color:{TXT_SECONDARY};margin-top:4px;opacity:0.7;">'
         f'Tiger Analytics &middot; v1.0</div>'
         f'</div>'
-        # Environment badge + AI toggle area
-        f'<div style="text-align:right;">'
-        f'<span style="background:#1B5E20;color:#A5D6A7;font-size:.65rem;font-weight:700;'
-        f'padding:3px 10px;border-radius:12px;letter-spacing:1px;">PROD</span>'
+        # Snowflake context (right side)
+        f'<div style="text-align:right;font-size:.72rem;line-height:1.8;">'
+        f'<div style="color:{TXT_LABEL};">Account: '
+        f'<span style="color:{TXT_PRIMARY};font-weight:600;">{_h_account}</span></div>'
+        f'<div style="color:{TXT_LABEL};">Warehouse: '
+        f'<span style="color:{TXT_PRIMARY};font-weight:600;">{_h_wh}</span></div>'
+        f'<div style="color:{TXT_LABEL};">Role: '
+        f'<span style="color:{TXT_PRIMARY};font-weight:600;">{_h_role}</span></div>'
         f'</div>'
         f'</div>'
         f'</div></div>', unsafe_allow_html=True)
@@ -486,6 +497,70 @@ def render_header():
                 "Model (override)", available_models,
                 index=idx,
                 key="header_ai_model", label_visibility="collapsed")
+
+    # ── Source Type & Connection selector (below header) ────────────────────
+    # Fetch profiles (cached in session to avoid repeated queries)
+    if "_profiles_list" not in st.session_state:
+        try:
+            _cur = _sf_conn().cursor()
+            from metadata import connection_manager as _cm
+            st.session_state["_profiles_list"] = _cm.list_profiles(_cur, active_only=True)
+            _cur.close()
+        except Exception:
+            st.session_state["_profiles_list"] = []
+
+    _profiles = st.session_state.get("_profiles_list", [])
+    if _profiles:
+        if "selected_source_type" not in st.session_state:
+            st.session_state["selected_source_type"] = "all"
+        if "selected_profile" not in st.session_state:
+            st.session_state["selected_profile"] = "All Connections"
+
+        src_col1, src_col2, src_col3 = st.columns([1, 2, 3])
+
+        _source_types = sorted(set(
+            p.get("SOURCE_TYPE", "").lower() for p in _profiles if p.get("SOURCE_TYPE")))
+        _type_options = ["all"] + _source_types
+
+        with src_col1:
+            sel_type = st.selectbox(
+                "Source Type",
+                _type_options,
+                index=_type_options.index(st.session_state["selected_source_type"])
+                if st.session_state["selected_source_type"] in _type_options else 0,
+                format_func=lambda x: "All Types" if x == "all" else x.upper(),
+                key="hdr_source_type_select",
+            )
+            st.session_state["selected_source_type"] = sel_type
+
+        if sel_type == "all":
+            _filtered = _profiles
+        else:
+            _filtered = [p for p in _profiles if (p.get("SOURCE_TYPE") or "").lower() == sel_type]
+
+        _profile_options = ["All Connections"] + [p["PROFILE_NAME"] for p in _filtered]
+        if st.session_state["selected_profile"] not in _profile_options:
+            st.session_state["selected_profile"] = "All Connections"
+
+        with src_col2:
+            sel_profile = st.selectbox(
+                "Source Connection",
+                _profile_options,
+                index=_profile_options.index(st.session_state["selected_profile"])
+                if st.session_state["selected_profile"] in _profile_options else 0,
+                key="hdr_profile_select",
+            )
+            st.session_state["selected_profile"] = sel_profile
+
+        with src_col3:
+            if sel_profile != "All Connections":
+                _sel_p = next((p for p in _filtered if p["PROFILE_NAME"] == sel_profile), None)
+                if _sel_p:
+                    st.markdown(
+                        f'<div style="font-size:.72rem;color:{TXT_SECONDARY};padding-top:28px;">'
+                        f'<code>{_sel_p.get("SOURCE_TYPE","?")}</code> · '
+                        f'{_sel_p.get("HOST","?")}:{_sel_p.get("PORT","?")}'
+                        f'</div>', unsafe_allow_html=True)
 
 
 def render_footer():
@@ -576,6 +651,7 @@ with st.sidebar:
         "Run": "▶️",
         "History": "📜",
         "Monitoring": "🩺",
+        "Connections": "🔌",
     }
     for page_name, icon in NAV_MIGRATION.items():
         is_active = st.session_state.current_page == page_name
@@ -604,92 +680,6 @@ with st.sidebar:
             st.rerun()
 
     selected = st.session_state.current_page
-
-    st.markdown(f"<hr style='border-color:{BORDER}'>", unsafe_allow_html=True)
-
-    # ── Source Type & Connection Selector ────────────────────────────────────────
-    st.markdown(
-        f'<div style="font-size:.65rem;letter-spacing:2px;text-transform:uppercase;'
-        f'color:{TXT_LABEL};font-weight:700;margin-bottom:4px">Source Type</div>',
-        unsafe_allow_html=True)
-
-    # Fetch profiles (cached in session to avoid repeated queries)
-    if "_profiles_list" not in st.session_state:
-        try:
-            _cur = _sf_conn().cursor()
-            from metadata import connection_manager as _cm
-            st.session_state["_profiles_list"] = _cm.list_profiles(_cur, active_only=True)
-            _cur.close()
-        except Exception:
-            st.session_state["_profiles_list"] = []
-
-    _profiles = st.session_state.get("_profiles_list", [])
-
-    # Source type selector
-    _source_types = sorted(set(p.get("SOURCE_TYPE", "").lower() for p in _profiles if p.get("SOURCE_TYPE"))) if _profiles else []
-    if "selected_source_type" not in st.session_state:
-        st.session_state["selected_source_type"] = "all"
-
-    _type_options = ["all"] + _source_types
-    sel_type = st.selectbox(
-        "source_type",
-        _type_options,
-        index=_type_options.index(st.session_state["selected_source_type"])
-        if st.session_state["selected_source_type"] in _type_options else 0,
-        format_func=lambda x: "All Types" if x == "all" else x.upper(),
-        label_visibility="collapsed",
-        key="sidebar_source_type_select",
-    )
-    st.session_state["selected_source_type"] = sel_type
-
-    # Filter profiles by selected source type
-    if sel_type == "all":
-        _filtered_profiles = _profiles
-    else:
-        _filtered_profiles = [p for p in _profiles if (p.get("SOURCE_TYPE") or "").lower() == sel_type]
-
-    # Source connection selector (filtered)
-    st.markdown(
-        f'<div style="font-size:.65rem;letter-spacing:2px;text-transform:uppercase;'
-        f'color:{TXT_LABEL};font-weight:700;margin-bottom:4px;margin-top:10px">Source Connection</div>',
-        unsafe_allow_html=True)
-
-    _profile_options = ["All Connections"] + [p["PROFILE_NAME"] for p in _filtered_profiles]
-
-    if "selected_profile" not in st.session_state:
-        st.session_state["selected_profile"] = "All Connections"
-
-    # Reset selection if current profile not in filtered list
-    if st.session_state["selected_profile"] not in _profile_options:
-        st.session_state["selected_profile"] = "All Connections"
-
-    sel_profile = st.selectbox(
-        "source_conn",
-        _profile_options,
-        index=_profile_options.index(st.session_state["selected_profile"])
-        if st.session_state["selected_profile"] in _profile_options else 0,
-        label_visibility="collapsed",
-        key="sidebar_profile_select",
-    )
-    st.session_state["selected_profile"] = sel_profile
-
-    # Show selected profile info
-    if sel_profile != "All Connections":
-        _sel_p = next((p for p in _filtered_profiles if p["PROFILE_NAME"] == sel_profile), None)
-        if _sel_p:
-            st.markdown(
-                f'<div style="font-family:monospace;font-size:.65rem;color:{TXT_SECONDARY};'
-                f'margin-top:4px;line-height:1.6">'
-                f'{_sel_p.get("SOURCE_TYPE","?")} · {_sel_p.get("HOST","?")}:{_sel_p.get("PORT","?")}'
-                f'</div>', unsafe_allow_html=True)
-
-    # Manage Connections button (replaces nav entry)
-    if st.button("🔌 Manage Connections", key="nav_Connections",
-                 use_container_width=True,
-                 type="primary" if st.session_state.current_page == "Connections" else "secondary"):
-        st.session_state.current_page = "Connections"
-        selected = "Connections"
-        st.rerun()
 
     st.markdown(f"<hr style='border-color:{BORDER}'>", unsafe_allow_html=True)
 

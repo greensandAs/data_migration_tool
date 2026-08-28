@@ -237,7 +237,9 @@ def _discover_tables_teradata(profile: dict, schema: str, password: str) -> list
             "LOAD_TYPE": "incremental" if wm else "full",
             "PARTITION_COL": pk_cols[0] if len(pk_cols) == 1 else None,
             "_review": "; ".join(reviews) if reviews else None,
-            "_columns_txt": f"PK={pk_cols or 'NONE'}, cols=[{', '.join(f'{n}({col_types.get(n.lower(), \"?\")})' for n in col_names)}]",
+            "_columns_txt": "PK={}, cols=[{}]".format(
+                pk_cols or 'NONE',
+                ', '.join(f'{n}({col_types.get(n.lower(), "?")})' for n in col_names)),
         })
 
     cur.close()
@@ -296,7 +298,9 @@ def _discover_tables_mysql(profile: dict, schema: str, password: str) -> list[di
             "LOAD_TYPE": "incremental" if wm else "full",
             "PARTITION_COL": pk_cols[0].upper() if len(pk_cols) == 1 else None,
             "_review": "; ".join(reviews) if reviews else None,
-            "_columns_txt": f"PK={[c.upper() for c in pk_cols] or 'NONE'}, cols=[{', '.join(f'{k}({v})' for k, v in col_map.items())}]",
+            "_columns_txt": "PK={}, cols=[{}]".format(
+                [c.upper() for c in pk_cols] or 'NONE',
+                ', '.join(f'{k}({v})' for k, v in col_map.items())),
         })
 
     cur.close()
@@ -379,7 +383,9 @@ def _discover_tables_mssql(profile: dict, schema: str, password: str) -> list[di
             "WATERMARK_COL": wm.upper() if wm else None,
             "LOAD_TYPE": "incremental" if wm else "full",
             "PARTITION_COL": pk_cols[0].upper() if len(pk_cols) == 1 else None,
-            "_columns_txt": f"PK={[c.upper() for c in pk_cols] or 'NONE'}, cols=[{', '.join(f'{n}({t})' for n, t in columns)}]",
+            "_columns_txt": "PK={}, cols=[{}]".format(
+                [c.upper() for c in pk_cols] or 'NONE',
+                ', '.join(f'{n}({t})' for n, t in columns)),
         })
 
     cur.close()
@@ -450,7 +456,9 @@ def _discover_tables_oracle(profile: dict, schema: str, password: str) -> list[d
             "WATERMARK_COL": wm.upper() if wm else None,
             "LOAD_TYPE": "incremental" if wm else "full",
             "PARTITION_COL": pk_cols[0].upper() if len(pk_cols) == 1 else None,
-            "_columns_txt": f"PK={[c.upper() for c in pk_cols] or 'NONE'}, cols=[{', '.join(f'{n}({t})' for n, t in columns)}]",
+            "_columns_txt": "PK={}, cols=[{}]".format(
+                [c.upper() for c in pk_cols] or 'NONE',
+                ', '.join(f'{n}({t})' for n, t in columns)),
         })
 
     cur.close()

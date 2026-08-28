@@ -34,11 +34,12 @@ def _sanitize_sql_string(value: str) -> str:
 def _escape_for_sql_literal(value: str) -> str:
     """Escape a value for use inside a Snowflake SQL single-quoted literal.
 
-    Handles backslash (must be doubled) and single quotes (must be doubled).
+    Only escapes single quotes. Snowflake standard string literals do NOT
+    use backslash escaping, so backslashes are passed through as-is.
     """
     if not value:
         return value
-    return value.replace("\\", "\\\\").replace("'", "''")
+    return value.replace("'", "''")
 
 
 def _sql_char_literal(ch: str) -> str:
@@ -69,6 +70,31 @@ def _stage_path(config: dict) -> str:
     if path:
         return f"@{stage}/{path}/"
     return f"@{stage}/"
+
+
+def _normalize_pattern(pattern: str) -> str:
+    """Convert glob-style patterns to regex for Snowflake PATTERN parameter.
+
+    Common user mistakes:
+      *.csv  → .*\\.csv
+      *.parquet → .*\\.parquet
+      *  → .*
+    If it's already a valid regex or empty, return as-is.
+    """
+    if not pattern or pattern.strip() == "*":
+        return ".*"
+    pattern = pattern.strip()
+    # Detect glob-style: starts with * but not .* (not already regex)
+    if pattern.startswith("*.") and not pattern.startswith(".*"):
+        ext = re.escape(pattern[2:])  # escape the extension part
+        return f".*\\.{ext}"
+    # Bare glob wildcard in path (e.g. "data/*.csv")
+    if "*." in pattern and ".*" not in pattern:
+        parts = pattern.rsplit("*.", 1)
+        prefix = re.escape(parts[0]) if parts[0] else ".*"
+        ext = re.escape(parts[1])
+        return f"{prefix}.*\\.{ext}"
+    return pattern
 
 
 def _build_file_format_sql(config: dict, fmt_name: str) -> str:
@@ -350,7 +376,7 @@ def run_ingestion(sf_conn, config: dict, batch_id: str = None,
 
     try:
         stage_path = _stage_path(config)
-        pattern = config.get("FILE_PATTERN", ".*")
+        pattern = _normalize_pattern(config.get("FILE_PATTERN", ".*"))
         target_fqn = (f"{config['TARGET_DB']}.{config.get('TARGET_SCHEMA', 'RAW')}"
                       f".{config['TARGET_TABLE']}")
         load_mode = (config.get("LOAD_MODE") or "APPEND").upper()

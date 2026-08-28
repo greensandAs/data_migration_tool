@@ -198,19 +198,6 @@ def render(conn):
             from utils.ui_theme import section_card_start as _scs2, section_card_end as _sce2
             _scs2("Run Ingestion", "▶️", border_color="#34D058")
 
-            # Display last run result (persists across reruns)
-            if "fi_last_run_result" in st.session_state:
-                lr = st.session_state.pop("fi_last_run_result")
-                if lr["type"] == "success":
-                    st.success(lr["msg"])
-                elif lr["type"] == "warning":
-                    st.warning(lr["msg"])
-                elif lr["type"] == "error":
-                    st.error(lr["msg"])
-                elif lr["type"] == "multi":
-                    for item in lr["items"]:
-                        st.write(item)
-
             run_mode = st.radio(
                 "Execution Mode",
                 ["Run All Active", "Run Single Job"],
@@ -263,6 +250,20 @@ def render(conn):
                         st.rerun()
 
             _sce2()
+
+            # Display last run result BELOW execution controls
+            if "fi_last_run_result" in st.session_state:
+                lr = st.session_state.pop("fi_last_run_result")
+                st.markdown("<br>", unsafe_allow_html=True)
+                if lr["type"] == "success":
+                    st.success(lr["msg"])
+                elif lr["type"] == "warning":
+                    st.warning(lr["msg"])
+                elif lr["type"] == "error":
+                    st.error(lr["msg"])
+                elif lr["type"] == "multi":
+                    for item in lr["items"]:
+                        st.write(item)
 
     # ── Tab 3: Add / Edit Job ─────────────────────────────────────────────────
     with tab_add:
@@ -378,7 +379,8 @@ def render(conn):
         file_pattern = s4.text_input(
             "File Pattern (regex) *",
             value=editing.get("FILE_PATTERN", "") if editing else "",
-            placeholder=r".*sales.*\.csv", key="fi_file_pattern")
+            placeholder=r".*sales.*\.csv", key="fi_file_pattern",
+            help="Regex pattern. Use `.*\\.csv` not `*.csv`")
 
         s5, s6 = st.columns(2)
         file_type = s5.selectbox(

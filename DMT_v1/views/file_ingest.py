@@ -893,56 +893,163 @@ def render(conn):
 
         # ── Create External Stage ────────────────────────────────────────────
         _scs("Create External Stage", "➕", border_color=ST_SUCCESS)
-        st.caption("Create an external stage linked to a storage integration.")
 
-        # Integration picker
-        try:
-            cur.execute("SHOW STORAGE INTEGRATIONS")
-            si_rows2 = cur.fetchall()
-            si_name_idx = next(i for i, d in enumerate(cur.description) if d[0] == "name")
-            integrations = [r[si_name_idx] for r in si_rows2]
-        except Exception:
-            integrations = []
+        # Auth method selection
+        auth_method = st.radio(
+            "Authentication Method",
+            ["Storage Integration", "Direct Credentials (AWS Keys / Azure SAS)"],
+            horizontal=True, key="fi_stg_auth_method")
 
+        # Common fields
         cs1, cs2, cs3 = st.columns(3)
         new_stg_db = cs1.text_input("Database *", value="HISTLOAD_DB", key="fi_new_stg_db")
         new_stg_schema = cs2.text_input("Schema *", value="META", key="fi_new_stg_schema")
         new_stg_name = cs3.text_input("Stage Name *", placeholder="MY_EXT_STAGE",
                                       key="fi_new_stg_name")
 
-        cs4, cs5 = st.columns(2)
-        if integrations:
-            sel_integration = cs4.selectbox("Storage Integration *", integrations,
-                                           key="fi_stg_integration")
-        else:
-            sel_integration = cs4.text_input("Storage Integration *",
-                                            placeholder="my_s3_integration",
-                                            key="fi_stg_int_txt")
-        stg_url = cs5.text_input("Stage URL *",
-                                 placeholder="s3://bucket/path/ or azure://...",
-                                 key="fi_stg_url")
+        if auth_method == "Storage Integration":
+            # ── Option 1: Using Storage Integration ───────────────────────────
+            st.caption("Uses a pre-configured storage integration (recommended for production).")
 
-        if st.button("Create External Stage", type="primary",
-                     use_container_width=True, key="fi_create_stg"):
-            if not new_stg_name.strip() or not stg_url.strip() or not sel_integration:
-                st.error("All fields are required.")
+            try:
+                cur.execute("SHOW STORAGE INTEGRATIONS")
+                si_rows2 = cur.fetchall()
+                si_name_idx = next(i for i, d in enumerate(cur.description) if d[0] == "name")
+                integrations = [r[si_name_idx] for r in si_rows2]
+            except Exception:
+                integrations = []
+
+            cs4, cs5 = st.columns(2)
+            if integrations:
+                sel_integration = cs4.selectbox("Storage Integration *", integrations,
+                                               key="fi_stg_integration")
             else:
-                fqn = f"{new_stg_db.strip()}.{new_stg_schema.strip()}.{new_stg_name.strip().upper()}"
-                ddl = (
-                    f"CREATE STAGE IF NOT EXISTS {fqn}\n"
-                    f"  STORAGE_INTEGRATION = {sel_integration}\n"
-                    f"  URL = '{stg_url.strip()}';"
-                )
-                st.code(ddl, language="sql")
-                try:
-                    cur.execute(f"CREATE DATABASE IF NOT EXISTS {new_stg_db.strip()}")
-                    cur.execute(f"CREATE SCHEMA IF NOT EXISTS {new_stg_db.strip()}.{new_stg_schema.strip()}")
-                    cur.execute(ddl)
-                    conn.commit()
-                    st.success(f"Stage `{fqn}` created!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed: {e}")
+                sel_integration = cs4.text_input("Storage Integration *",
+                                                placeholder="my_s3_integration",
+                                                key="fi_stg_int_txt")
+            stg_url = cs5.text_input("Stage URL *",
+                                     placeholder="s3://bucket/path/ or azure://account.blob.core.windows.net/container/",
+                                     key="fi_stg_url_int")
+
+            if st.button("Create Stage (Integration)", type="primary",
+                         use_container_width=True, key="fi_create_stg_int"):
+                if not new_stg_name.strip() or not stg_url.strip() or not sel_integration:
+                    st.error("All fields are required.")
+                else:
+                    fqn = f"{new_stg_db.strip()}.{new_stg_schema.strip()}.{new_stg_name.strip().upper()}"
+                    ddl = (
+                        f"CREATE STAGE IF NOT EXISTS {fqn}\n"
+                        f"  STORAGE_INTEGRATION = {sel_integration}\n"
+                        f"  URL = '{stg_url.strip()}';"
+                    )
+                    st.code(ddl, language="sql")
+                    try:
+                        cur.execute(f"CREATE DATABASE IF NOT EXISTS {new_stg_db.strip()}")
+                        cur.execute(f"CREATE SCHEMA IF NOT EXISTS {new_stg_db.strip()}.{new_stg_schema.strip()}")
+                        cur.execute(ddl)
+                        conn.commit()
+                        st.success(f"Stage `{fqn}` created!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+
+        else:
+            # ── Option 2: Direct Credentials ─────────────────────────────────
+            st.caption("Uses access keys or SAS tokens directly (simpler setup, less secure).")
+
+            cloud_type = st.selectbox("Cloud Provider", ["AWS S3", "Azure Blob"],
+                                     key="fi_stg_direct_cloud")
+
+            if cloud_type == "AWS S3":
+                dc1, dc2 = st.columns(2)
+                stg_url_direct = dc1.text_input("S3 URL *",
+                                                placeholder="s3://my-bucket/path/",
+                                                key="fi_stg_s3_url")
+                aws_key = dc2.text_input("AWS Key ID *",
+                                         placeholder="AKIAIOSFODNN7EXAMPLE",
+                                         key="fi_stg_aws_key")
+                dc3, dc4 = st.columns(2)
+                aws_secret = dc3.text_input("AWS Secret Key *",
+                                            type="password",
+                                            key="fi_stg_aws_secret")
+                aws_token = dc4.text_input("AWS Session Token (optional)",
+                                           type="password",
+                                           key="fi_stg_aws_token",
+                                           help="Only for temporary credentials")
+
+                if st.button("Create Stage (AWS Direct)", type="primary",
+                             use_container_width=True, key="fi_create_stg_aws"):
+                    if not new_stg_name.strip() or not stg_url_direct.strip() or not aws_key.strip() or not aws_secret.strip():
+                        st.error("Stage Name, URL, Key ID, and Secret Key are required.")
+                    else:
+                        fqn = f"{new_stg_db.strip()}.{new_stg_schema.strip()}.{new_stg_name.strip().upper()}"
+                        cred_block = (
+                            f"  CREDENTIALS = (\n"
+                            f"    AWS_KEY_ID = '{aws_key.strip()}'\n"
+                            f"    AWS_SECRET_KEY = '{aws_secret.strip()}'"
+                        )
+                        if aws_token.strip():
+                            cred_block += f"\n    AWS_TOKEN = '{aws_token.strip()}'"
+                        cred_block += "\n  )"
+
+                        ddl = (
+                            f"CREATE STAGE IF NOT EXISTS {fqn}\n"
+                            f"  URL = '{stg_url_direct.strip()}'\n"
+                            f"{cred_block};"
+                        )
+                        st.code("-- DDL generated (credentials masked in display)\n"
+                                f"CREATE STAGE IF NOT EXISTS {fqn}\n"
+                                f"  URL = '{stg_url_direct.strip()}'\n"
+                                f"  CREDENTIALS = (AWS_KEY_ID = '***' AWS_SECRET_KEY = '***');",
+                                language="sql")
+                        try:
+                            cur.execute(f"CREATE DATABASE IF NOT EXISTS {new_stg_db.strip()}")
+                            cur.execute(f"CREATE SCHEMA IF NOT EXISTS {new_stg_db.strip()}.{new_stg_schema.strip()}")
+                            cur.execute(ddl)
+                            conn.commit()
+                            st.success(f"Stage `{fqn}` created with AWS credentials!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
+
+            else:  # Azure Blob
+                dc1, dc2 = st.columns(2)
+                stg_url_direct = dc1.text_input("Azure URL *",
+                                                placeholder="azure://account.blob.core.windows.net/container/path/",
+                                                key="fi_stg_az_url")
+                az_sas = dc2.text_input("SAS Token *",
+                                        type="password",
+                                        placeholder="?sv=2021-06-08&ss=b&srt=sco&sp=rl...",
+                                        key="fi_stg_az_sas")
+
+                if st.button("Create Stage (Azure Direct)", type="primary",
+                             use_container_width=True, key="fi_create_stg_az"):
+                    if not new_stg_name.strip() or not stg_url_direct.strip() or not az_sas.strip():
+                        st.error("Stage Name, Azure URL, and SAS Token are required.")
+                    else:
+                        fqn = f"{new_stg_db.strip()}.{new_stg_schema.strip()}.{new_stg_name.strip().upper()}"
+                        # Strip leading ? from SAS if user included it
+                        sas_clean = az_sas.strip().lstrip("?")
+                        ddl = (
+                            f"CREATE STAGE IF NOT EXISTS {fqn}\n"
+                            f"  URL = '{stg_url_direct.strip()}'\n"
+                            f"  CREDENTIALS = (AZURE_SAS_TOKEN = '?{sas_clean}');"
+                        )
+                        st.code("-- DDL generated (credentials masked in display)\n"
+                                f"CREATE STAGE IF NOT EXISTS {fqn}\n"
+                                f"  URL = '{stg_url_direct.strip()}'\n"
+                                f"  CREDENTIALS = (AZURE_SAS_TOKEN = '***');",
+                                language="sql")
+                        try:
+                            cur.execute(f"CREATE DATABASE IF NOT EXISTS {new_stg_db.strip()}")
+                            cur.execute(f"CREATE SCHEMA IF NOT EXISTS {new_stg_db.strip()}.{new_stg_schema.strip()}")
+                            cur.execute(ddl)
+                            conn.commit()
+                            st.success(f"Stage `{fqn}` created with Azure SAS token!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
+
         _sce()
 
     # ── Tab 5: Run History ────────────────────────────────────────────────────

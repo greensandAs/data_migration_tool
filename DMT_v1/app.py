@@ -443,8 +443,7 @@ def source_type_pill(source_type: str) -> str:
 
 
 def render_header():
-    # Header — Gradient banner with MigrateX branding
-    # Get connection info for header display
+    # ── Compact Header Banner ──────────────────────────────────────────────────
     _conn_info = st.session_state.get("_conn_status", (False, {}))
     _h_ok, _h_info = _conn_info
     _h_account = _h_info.get("account", "—") if _h_ok else "—"
@@ -452,54 +451,29 @@ def render_header():
     _h_role = _h_info.get("role", "—") if _h_ok else "—"
 
     st.markdown(
-        f'<div class="main-header">'
-        f'<div style="background:linear-gradient(135deg, {TA_NAVY} 0%, #1a2940 60%, #0f1f33 100%);'
-        f'border-radius:10px;padding:18px 28px;position:relative;overflow:hidden;'
-        f'border:1px solid {BORDER};">'
-        # Accent stripe
-        f'<div style="position:absolute;top:0;left:0;width:5px;height:100%;'
-        f'background:linear-gradient(180deg, {TA_ORANGE}, #FF6B35);border-radius:10px 0 0 10px;"></div>'
-        # App name + environment info
+        f'<div style="background:linear-gradient(135deg, {TA_NAVY} 0%, #1a2940 100%);'
+        f'border-radius:8px;padding:12px 20px;margin-bottom:12px;'
+        f'border:1px solid {BORDER};position:relative;overflow:hidden;">'
+        f'<div style="position:absolute;top:0;left:0;width:4px;height:100%;'
+        f'background:linear-gradient(180deg, {TA_ORANGE}, #FF6B35);"></div>'
         f'<div style="display:flex;align-items:center;justify-content:space-between;">'
-        f'<div>'
-        f'<div style="font-size:1.6rem;font-weight:800;color:#FFFFFF;letter-spacing:-0.5px;">'
-        f'<span style="color:{TA_ORANGE};">Migrate</span>X</div>'
-        f'<div style="font-size:.82rem;color:{TXT_SECONDARY};margin-top:2px;">'
-        f'Accelerate Your Data Journey to Snowflake</div>'
-        f'<div style="font-size:.68rem;color:{TXT_SECONDARY};margin-top:4px;opacity:0.7;">'
-        f'Tiger Analytics &middot; v1.0</div>'
+        # Left: App name + tagline
+        f'<div style="display:flex;align-items:baseline;gap:12px;">'
+        f'<span style="font-size:1.3rem;font-weight:800;color:#FFF;letter-spacing:-0.5px;">'
+        f'<span style="color:{TA_ORANGE};">Migrate</span>X</span>'
+        f'<span style="font-size:.72rem;color:{TXT_SECONDARY};">'
+        f'Accelerate Your Data Journey to Snowflake</span>'
         f'</div>'
-        # Snowflake context (right side)
-        f'<div style="text-align:right;font-size:.72rem;line-height:1.8;">'
-        f'<div style="color:{TXT_LABEL};">Account: '
-        f'<span style="color:{TXT_PRIMARY};font-weight:600;">{_h_account}</span></div>'
-        f'<div style="color:{TXT_LABEL};">Warehouse: '
-        f'<span style="color:{TXT_PRIMARY};font-weight:600;">{_h_wh}</span></div>'
-        f'<div style="color:{TXT_LABEL};">Role: '
-        f'<span style="color:{TXT_PRIMARY};font-weight:600;">{_h_role}</span></div>'
-        f'</div>'
+        # Right: Account context
+        f'<div style="display:flex;align-items:center;gap:16px;font-size:.68rem;">'
+        f'<span style="color:{TXT_LABEL};">⛁ <span style="color:{TXT_PRIMARY}">{_h_account}</span></span>'
+        f'<span style="color:{TXT_LABEL};">⚙ <span style="color:{TXT_PRIMARY}">{_h_wh}</span></span>'
+        f'<span style="color:{TXT_LABEL};">🛡 <span style="color:{TXT_PRIMARY}">{_h_role}</span></span>'
         f'</div>'
         f'</div></div>', unsafe_allow_html=True)
 
-    # AI toggle row below header
-    ai_l, ai_r = st.columns([3, 1])
-    with ai_r:
-        st.session_state["_ai_on"] = st.toggle(
-            "🤖 AI Assist", value=st.session_state.get("_ai_on", False),
-            key="header_ai_toggle",
-            help="Enable AI Gateway-powered recommendations and failure explanations. "
-                 "Configure per-feature models in DMT_SETTINGS (LLM_MODEL_CONFIG, LLM_MODEL_DDL, LLM_MODEL_HISTORY).")
-        if st.session_state["_ai_on"]:
-            available_models = _get_available_models()
-            default_model = st.session_state.get("_ai_model", AI_MODEL)
-            idx = available_models.index(default_model) if default_model in available_models else 0
-            st.session_state["_ai_model"] = st.selectbox(
-                "Model (override)", available_models,
-                index=idx,
-                key="header_ai_model", label_visibility="collapsed")
-
-    # ── Source Type & Connection selector (below header) ────────────────────
-    # Fetch profiles (cached in session to avoid repeated queries)
+    # ── Source selector row + AI toggle (single compact line) ────────────────
+    # Fetch profiles
     if "_profiles_list" not in st.session_state:
         try:
             _cur = _sf_conn().cursor()
@@ -510,57 +484,69 @@ def render_header():
             st.session_state["_profiles_list"] = []
 
     _profiles = st.session_state.get("_profiles_list", [])
-    if _profiles:
-        if "selected_source_type" not in st.session_state:
-            st.session_state["selected_source_type"] = "all"
-        if "selected_profile" not in st.session_state:
-            st.session_state["selected_profile"] = "All Connections"
+    if "selected_source_type" not in st.session_state:
+        st.session_state["selected_source_type"] = "all"
+    if "selected_profile" not in st.session_state:
+        st.session_state["selected_profile"] = "All Connections"
 
-        src_col1, src_col2, src_col3 = st.columns([1, 2, 3])
+    src_col1, src_col2, src_col3, src_col4 = st.columns([1.5, 2.5, 1.5, 1])
 
-        _source_types = sorted(set(
-            p.get("SOURCE_TYPE", "").lower() for p in _profiles if p.get("SOURCE_TYPE")))
-        _type_options = ["all"] + _source_types
+    _source_types = sorted(set(
+        p.get("SOURCE_TYPE", "").lower() for p in _profiles if p.get("SOURCE_TYPE"))) if _profiles else []
+    _type_options = ["all"] + _source_types
 
-        with src_col1:
-            sel_type = st.selectbox(
-                "Source Type",
-                _type_options,
-                index=_type_options.index(st.session_state["selected_source_type"])
-                if st.session_state["selected_source_type"] in _type_options else 0,
-                format_func=lambda x: "All Types" if x == "all" else x.upper(),
-                key="hdr_source_type_select",
-            )
-            st.session_state["selected_source_type"] = sel_type
+    with src_col1:
+        sel_type = st.selectbox(
+            "Source Type",
+            _type_options,
+            index=_type_options.index(st.session_state["selected_source_type"])
+            if st.session_state["selected_source_type"] in _type_options else 0,
+            format_func=lambda x: "All Types" if x == "all" else x.upper(),
+            key="hdr_source_type_select", label_visibility="collapsed",
+        )
+        st.session_state["selected_source_type"] = sel_type
 
-        if sel_type == "all":
-            _filtered = _profiles
-        else:
-            _filtered = [p for p in _profiles if (p.get("SOURCE_TYPE") or "").lower() == sel_type]
+    if sel_type == "all":
+        _filtered = _profiles
+    else:
+        _filtered = [p for p in _profiles if (p.get("SOURCE_TYPE") or "").lower() == sel_type]
 
-        _profile_options = ["All Connections"] + [p["PROFILE_NAME"] for p in _filtered]
-        if st.session_state["selected_profile"] not in _profile_options:
-            st.session_state["selected_profile"] = "All Connections"
+    _profile_options = ["All Connections"] + [p["PROFILE_NAME"] for p in _filtered]
+    if st.session_state["selected_profile"] not in _profile_options:
+        st.session_state["selected_profile"] = "All Connections"
 
-        with src_col2:
-            sel_profile = st.selectbox(
-                "Source Connection",
-                _profile_options,
-                index=_profile_options.index(st.session_state["selected_profile"])
-                if st.session_state["selected_profile"] in _profile_options else 0,
-                key="hdr_profile_select",
-            )
-            st.session_state["selected_profile"] = sel_profile
+    with src_col2:
+        sel_profile = st.selectbox(
+            "Source Connection",
+            _profile_options,
+            index=_profile_options.index(st.session_state["selected_profile"])
+            if st.session_state["selected_profile"] in _profile_options else 0,
+            key="hdr_profile_select", label_visibility="collapsed",
+        )
+        st.session_state["selected_profile"] = sel_profile
 
-        with src_col3:
-            if sel_profile != "All Connections":
-                _sel_p = next((p for p in _filtered if p["PROFILE_NAME"] == sel_profile), None)
-                if _sel_p:
-                    st.markdown(
-                        f'<div style="font-size:.72rem;color:{TXT_SECONDARY};padding-top:28px;">'
-                        f'<code>{_sel_p.get("SOURCE_TYPE","?")}</code> · '
-                        f'{_sel_p.get("HOST","?")}:{_sel_p.get("PORT","?")}'
-                        f'</div>', unsafe_allow_html=True)
+    with src_col3:
+        if sel_profile != "All Connections":
+            _sel_p = next((p for p in _filtered if p["PROFILE_NAME"] == sel_profile), None)
+            if _sel_p:
+                st.markdown(
+                    f'<div style="font-size:.68rem;color:{TXT_SECONDARY};padding-top:6px;">'
+                    f'<code>{_sel_p.get("SOURCE_TYPE","?")}</code> · '
+                    f'{_sel_p.get("HOST","?")}:{_sel_p.get("PORT","?")}'
+                    f'</div>', unsafe_allow_html=True)
+
+    with src_col4:
+        st.session_state["_ai_on"] = st.toggle(
+            "🤖 AI", value=st.session_state.get("_ai_on", False),
+            key="header_ai_toggle",
+            help="Enable AI-powered recommendations.")
+        if st.session_state["_ai_on"]:
+            available_models = _get_available_models()
+            default_model = st.session_state.get("_ai_model", AI_MODEL)
+            idx = available_models.index(default_model) if default_model in available_models else 0
+            st.session_state["_ai_model"] = st.selectbox(
+                "Model", available_models, index=idx,
+                key="header_ai_model", label_visibility="collapsed")
 
 
 def render_footer():
@@ -655,11 +641,17 @@ with st.sidebar:
     }
     for page_name, icon in NAV_MIGRATION.items():
         is_active = st.session_state.current_page == page_name
-        btn_type = "primary" if is_active else "secondary"
-        if st.button(f"{icon} {page_name}", key=f"nav_{page_name}",
-                     use_container_width=True, type=btn_type):
-            st.session_state.current_page = page_name
-            st.rerun()
+        if is_active:
+            st.markdown(
+                f'<div style="background:{TA_ORANGE}22;border-left:3px solid {TA_ORANGE};'
+                f'padding:6px 10px;margin:2px 0;border-radius:0 6px 6px 0;'
+                f'font-size:.82rem;font-weight:600;color:{TA_ORANGE};">'
+                f'{icon} {page_name}</div>', unsafe_allow_html=True)
+        else:
+            if st.button(f"{icon} {page_name}", key=f"nav_{page_name}",
+                         use_container_width=True, type="secondary"):
+                st.session_state.current_page = page_name
+                st.rerun()
 
     # Group 2: File Ingestion
     st.markdown(
@@ -673,50 +665,32 @@ with st.sidebar:
     }
     for page_name, icon in NAV_FILE.items():
         is_active = st.session_state.current_page == page_name
-        btn_type = "primary" if is_active else "secondary"
-        if st.button(f"{icon} {page_name}", key=f"nav_{page_name}",
-                     use_container_width=True, type=btn_type):
-            st.session_state.current_page = page_name
-            st.rerun()
+        if is_active:
+            st.markdown(
+                f'<div style="background:#58A6FF22;border-left:3px solid #58A6FF;'
+                f'padding:6px 10px;margin:2px 0;border-radius:0 6px 6px 0;'
+                f'font-size:.82rem;font-weight:600;color:#58A6FF;">'
+                f'{icon} {page_name}</div>', unsafe_allow_html=True)
+        else:
+            if st.button(f"{icon} {page_name}", key=f"nav_{page_name}",
+                         use_container_width=True, type="secondary"):
+                st.session_state.current_page = page_name
+                st.rerun()
 
     selected = st.session_state.current_page
 
     st.markdown(f"<hr style='border-color:{BORDER}'>", unsafe_allow_html=True)
 
-    # ── Connection status card (green/red dot + user + role) ──────────────────
+    # ── Connection check (no card shown — info is in header) ──────────────────
     if "_conn_status" not in st.session_state:
         with st.spinner("Connecting…"):
             st.session_state["_conn_status"] = check_snowflake()
 
     ok, info = st.session_state["_conn_status"]
-    dot_color = ST_SUCCESS if ok else ST_FAILED
-    status_label = "Connected" if ok else "Disconnected"
-
-    if ok:
-        user = info.get("user", "?")
-        role = info.get("role", "?")
-        wh = info.get("warehouse", "?")
+    if not ok:
         st.markdown(
-            f'<div class="conn-card">'
-            f'<div class="conn-row">'
-            f'<div class="conn-dot" style="background:{dot_color}"></div>'
-            f'<span class="conn-title">{status_label}</span></div>'
-            f'<div class="conn-detail">'
-            f'👤 {user}<br>'
-            f'🛡️ {role}<br>'
-            f'🏭 {wh}'
-            f'</div></div>', unsafe_allow_html=True)
-    else:
-        err = info.get("error", "Unknown error")
-        env = info.get("env", "")
-        st.markdown(
-            f'<div class="conn-card" style="border-color:{ST_FAILED}44">'
-            f'<div class="conn-row">'
-            f'<div class="conn-dot" style="background:{dot_color}"></div>'
-            f'<span class="conn-title" style="color:{ST_FAILED}">{status_label}</span></div>'
-            f'<div class="conn-detail" style="color:{ST_FAILED}">'
-            f'{err}<br><span style="color:{TXT_LABEL}">{env}</span>'
-            f'</div></div>', unsafe_allow_html=True)
+            f'<div style="font-size:.72rem;color:{ST_FAILED};padding:4px 0;">'
+            f'⚠ Disconnected</div>', unsafe_allow_html=True)
 
     st.markdown(f"<br>", unsafe_allow_html=True)
     st.caption("MigrateX v1.0 · Tiger Analytics")

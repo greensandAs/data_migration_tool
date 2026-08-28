@@ -471,76 +471,80 @@ def render_header():
         f'</div>'
         f'</div></div>', unsafe_allow_html=True)
 
-    # ── Source selector + AI (single row) ────────────────────────────────────
-    if "_profiles_list" not in st.session_state:
-        try:
-            _cur = _sf_conn().cursor()
-            from metadata import connection_manager as _cm
-            st.session_state["_profiles_list"] = _cm.list_profiles(_cur, active_only=True)
-            _cur.close()
-        except Exception:
-            st.session_state["_profiles_list"] = []
+    # ── Source selector + AI (only for Database Migration pages) ────────────────
+    _DB_MIGRATION_PAGES = {"Overview", "Pipeline Setup", "Schema Mapping", "Execute", "Observability", "Sources"}
+    _current = st.session_state.get("current_page", "Overview")
 
-    _profiles = st.session_state.get("_profiles_list", [])
-    if "selected_source_type" not in st.session_state:
-        st.session_state["selected_source_type"] = "all"
-    if "selected_profile" not in st.session_state:
-        st.session_state["selected_profile"] = "All Connections"
+    if _current in _DB_MIGRATION_PAGES:
+        if "_profiles_list" not in st.session_state:
+            try:
+                _cur = _sf_conn().cursor()
+                from metadata import connection_manager as _cm
+                st.session_state["_profiles_list"] = _cm.list_profiles(_cur, active_only=True)
+                _cur.close()
+            except Exception:
+                st.session_state["_profiles_list"] = []
 
-    _source_types = sorted(set(
-        p.get("SOURCE_TYPE", "").lower() for p in _profiles if p.get("SOURCE_TYPE"))) if _profiles else []
-    _type_options = ["all"] + _source_types
+        _profiles = st.session_state.get("_profiles_list", [])
+        if "selected_source_type" not in st.session_state:
+            st.session_state["selected_source_type"] = "all"
+        if "selected_profile" not in st.session_state:
+            st.session_state["selected_profile"] = "All Connections"
 
-    src_col1, src_col2, src_col3 = st.columns([1.5, 3, 2])
+        _source_types = sorted(set(
+            p.get("SOURCE_TYPE", "").lower() for p in _profiles if p.get("SOURCE_TYPE"))) if _profiles else []
+        _type_options = ["all"] + _source_types
 
-    with src_col1:
-        sel_type = st.selectbox(
-            "Source Type",
-            _type_options,
-            index=_type_options.index(st.session_state["selected_source_type"])
-            if st.session_state["selected_source_type"] in _type_options else 0,
-            format_func=lambda x: f"🔌 All Sources ({len(_profiles)})" if x == "all"
-                else f"🔌 {x.upper()} ({sum(1 for p in _profiles if (p.get('SOURCE_TYPE') or '').lower() == x)})",
-            key="hdr_source_type_select", label_visibility="collapsed",
-        )
-        st.session_state["selected_source_type"] = sel_type
+        src_col1, src_col2, src_col3 = st.columns([1.5, 3, 2])
 
-    if sel_type == "all":
-        _filtered = _profiles
-    else:
-        _filtered = [p for p in _profiles if (p.get("SOURCE_TYPE") or "").lower() == sel_type]
+        with src_col1:
+            sel_type = st.selectbox(
+                "Source Type",
+                _type_options,
+                index=_type_options.index(st.session_state["selected_source_type"])
+                if st.session_state["selected_source_type"] in _type_options else 0,
+                format_func=lambda x: f"🔌 All Sources ({len(_profiles)})" if x == "all"
+                    else f"🔌 {x.upper()} ({sum(1 for p in _profiles if (p.get('SOURCE_TYPE') or '').lower() == x)})",
+                key="hdr_source_type_select", label_visibility="collapsed",
+            )
+            st.session_state["selected_source_type"] = sel_type
 
-    _profile_options = ["All Connections"] + [p["PROFILE_NAME"] for p in _filtered]
-    if st.session_state["selected_profile"] not in _profile_options:
-        st.session_state["selected_profile"] = "All Connections"
+        if sel_type == "all":
+            _filtered = _profiles
+        else:
+            _filtered = [p for p in _profiles if (p.get("SOURCE_TYPE") or "").lower() == sel_type]
 
-    with src_col2:
-        sel_profile = st.selectbox(
-            "Source Connection",
-            _profile_options,
-            index=_profile_options.index(st.session_state["selected_profile"])
-            if st.session_state["selected_profile"] in _profile_options else 0,
-            format_func=lambda x: f"📡 All Connections ({len(_filtered)})" if x == "All Connections"
-                else f"📡 {x}",
-            key="hdr_profile_select", label_visibility="collapsed",
-        )
-        st.session_state["selected_profile"] = sel_profile
+        _profile_options = ["All Connections"] + [p["PROFILE_NAME"] for p in _filtered]
+        if st.session_state["selected_profile"] not in _profile_options:
+            st.session_state["selected_profile"] = "All Connections"
 
-    with src_col3:
-        ai_c1, ai_c2 = st.columns([1, 2])
-        with ai_c1:
-            st.session_state["_ai_on"] = st.toggle(
-                "🤖 AI", value=st.session_state.get("_ai_on", False),
-                key="header_ai_toggle",
-                help="Enable AI-powered recommendations.")
-        with ai_c2:
-            if st.session_state["_ai_on"]:
-                available_models = _get_available_models()
-                default_model = st.session_state.get("_ai_model", AI_MODEL)
-                idx = available_models.index(default_model) if default_model in available_models else 0
-                st.session_state["_ai_model"] = st.selectbox(
-                    "Model", available_models, index=idx,
-                    key="header_ai_model", label_visibility="collapsed")
+        with src_col2:
+            sel_profile = st.selectbox(
+                "Source Connection",
+                _profile_options,
+                index=_profile_options.index(st.session_state["selected_profile"])
+                if st.session_state["selected_profile"] in _profile_options else 0,
+                format_func=lambda x: f"📡 All Connections ({len(_filtered)})" if x == "All Connections"
+                    else f"📡 {x}",
+                key="hdr_profile_select", label_visibility="collapsed",
+            )
+            st.session_state["selected_profile"] = sel_profile
+
+        with src_col3:
+            ai_c1, ai_c2 = st.columns([1, 2])
+            with ai_c1:
+                st.session_state["_ai_on"] = st.toggle(
+                    "🤖 AI", value=st.session_state.get("_ai_on", False),
+                    key="header_ai_toggle",
+                    help="Enable AI-powered recommendations.")
+            with ai_c2:
+                if st.session_state["_ai_on"]:
+                    available_models = _get_available_models()
+                    default_model = st.session_state.get("_ai_model", AI_MODEL)
+                    idx = available_models.index(default_model) if default_model in available_models else 0
+                    st.session_state["_ai_model"] = st.selectbox(
+                        "Model", available_models, index=idx,
+                        key="header_ai_model", label_visibility="collapsed")
 
 
 def render_footer():

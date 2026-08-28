@@ -222,7 +222,9 @@ def _build_copy_into(config: dict, target_fqn: str, stage_path: str,
     parts.append(f"ON_ERROR = {on_error}")
 
     if match_by:
-        parts.append(f"MATCH_BY_COLUMN_NAME = {match_by}")
+        # MATCH_BY_COLUMN_NAME requires PARSE_HEADER for CSV
+        if file_type != "CSV":
+            parts.append(f"MATCH_BY_COLUMN_NAME = {match_by}")
     elif file_type in ("PARQUET", "AVRO", "JSON"):
         parts.append("MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE")
 

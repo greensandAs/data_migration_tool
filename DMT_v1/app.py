@@ -586,6 +586,17 @@ live_running_panel = (_fragment(run_every=1.0)(_render_running_panel)
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
+
+def _render_help(conn):
+    """Render the User Guide markdown inside the app."""
+    guide_path = HERE / "userguide.md"
+    if guide_path.exists():
+        content = guide_path.read_text(encoding="utf-8")
+        st.markdown(content, unsafe_allow_html=True)
+    else:
+        st.warning("User Guide not found. Ensure `userguide.md` exists in the app directory.")
+
+
 PAGES = {
     "Overview": render_dashboard,
     "Sources": render_connections,
@@ -595,6 +606,7 @@ PAGES = {
     "Schema Mapping": render_ddl,
     "Execute": render_run,
     "Observability": render_observability,
+    "Help": _render_help,
 }
 
 with st.sidebar:
@@ -660,6 +672,15 @@ with st.sidebar:
             if not is_active:
                 st.session_state.current_page = page_name
                 st.rerun()
+
+    # Help / User Guide link
+    st.markdown(f"<hr style='border-color:{BORDER}'>", unsafe_allow_html=True)
+    if st.button("📖 User Guide", key="nav_Help",
+                 use_container_width=True,
+                 type="primary" if st.session_state.current_page == "Help" else "secondary"):
+        if st.session_state.current_page != "Help":
+            st.session_state.current_page = "Help"
+            st.rerun()
 
     selected = st.session_state.current_page
 

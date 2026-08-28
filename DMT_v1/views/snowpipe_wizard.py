@@ -434,21 +434,18 @@ def render(conn):
         try:
             query = (
                 "SELECT TABLE_NAME, FILE_NAME, STATUS, ROW_COUNT, ROW_PARSED, "
-                "ERROR_COUNT, FIRST_ERROR_MESSAGE, PIPE_RECEIVED_TIME, "
+                "ERROR_COUNT, FIRST_ERROR_MESSAGE, "
                 "LAST_LOAD_TIME "
-                "FROM TABLE(INFORMATION_SCHEMA.COPY_HISTORY(\n"
-                f"  DATE_RANGE_START => DATEADD('hours', -{mon_hours}, CURRENT_TIMESTAMP()),\n"
-                "  RESULT_LIMIT => 200))\n"
+                "FROM SNOWFLAKE.ACCOUNT_USAGE.COPY_HISTORY "
+                f"WHERE LAST_LOAD_TIME >= DATEADD('hours', -{mon_hours}, CURRENT_TIMESTAMP())\n"
             )
             if mon_status != "All":
                 status_map = {"Loaded": "Loaded", "Load Failed": "Load_Failed",
                               "Partially Loaded": "Partially_Loaded"}
-                query += f"WHERE STATUS = '{status_map.get(mon_status, mon_status)}'\n"
-                if mon_table.strip():
-                    query += f"AND TABLE_NAME ILIKE '%{mon_table.strip()}%'\n"
-            elif mon_table.strip():
-                query += f"WHERE TABLE_NAME ILIKE '%{mon_table.strip()}%'\n"
-            query += "ORDER BY LAST_LOAD_TIME DESC;"
+                query += f"AND STATUS = '{status_map.get(mon_status, mon_status)}'\n"
+            if mon_table.strip():
+                query += f"AND TABLE_NAME ILIKE '%{mon_table.strip()}%'\n"
+            query += "ORDER BY LAST_LOAD_TIME DESC LIMIT 200;"
 
             cur.execute(query)
             hist_rows = cur.fetchall()
@@ -504,8 +501,8 @@ def render(conn):
 
         except Exception as e:
             st.warning(f"Cannot query COPY_HISTORY: {e}")
-            st.caption("This requires the INFORMATION_SCHEMA.COPY_HISTORY function. "
-                       "Make sure you have the appropriate privileges.")
+            st.caption("Uses SNOWFLAKE.ACCOUNT_USAGE.COPY_HISTORY (up to 45-min latency). "
+                       "Requires ACCOUNTADMIN or IMPORTED PRIVILEGES on SNOWFLAKE database.")
 
         section_card_end()
 

@@ -294,16 +294,17 @@ def render(conn):
             try:
                 cur.execute(f"DESCRIBE STAGE {stage_name}")
                 desc_rows = cur.fetchall()
+                # Check all columns in all rows for cloud URL patterns
                 for row in desc_rows:
-                    prop = str(row[0]).upper() if row[0] else ""
-                    val = str(row[1]).lower() if row[1] else ""
-                    if "URL" in prop or "STAGE_LOCATION" in prop:
-                        if "s3://" in val:
-                            cloud_provider = "S3"
-                        elif "azure://" in val or "blob.core" in val:
-                            cloud_provider = "AZURE"
-                        elif "gcs://" in val:
-                            cloud_provider = "GCS"
+                    row_text = " ".join(str(c).lower() for c in row if c)
+                    if "s3://" in row_text:
+                        cloud_provider = "S3"
+                        break
+                    elif "azure://" in row_text or "blob.core.windows.net" in row_text:
+                        cloud_provider = "AZURE"
+                        break
+                    elif "gcs://" in row_text or "storage.googleapis.com" in row_text:
+                        cloud_provider = "GCS"
                         break
             except Exception:
                 pass

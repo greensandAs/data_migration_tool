@@ -766,8 +766,10 @@ def render(conn):
                             tmp_path = tmp.name
 
                         try:
+                            # Normalize path for Windows: backslashes → forward slashes
+                            normalized_path = tmp_path.replace("\\", "/")
                             put_sql = (
-                                f"PUT 'file://{tmp_path}' "
+                                f"PUT 'file://{normalized_path}' "
                                 f"@{_UPLOAD_STAGE}/{upload_path}/ "
                                 f"AUTO_COMPRESS = FALSE OVERWRITE = TRUE")
                             cur.execute(put_sql)

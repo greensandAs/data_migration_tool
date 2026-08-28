@@ -56,6 +56,7 @@ def _render_run_logs(cur, conn):
     c1, c2 = st.columns([5, 1])
     selected_window = c1.segmented_control(
         "Time Window", TIME_OPTIONS, default="7d", key="obs_time_window") or "7d"
+    c2.markdown("<div style='padding-top:26px;'>", unsafe_allow_html=True)
     if c2.button("🔄", key="obs_refresh", help="Refresh data"):
         for k in [k for k in st.session_state if k.startswith("_obs_hist_")]:
             del st.session_state[k]
@@ -215,6 +216,7 @@ def _render_health(cur):
     c1, c2 = st.columns([5, 1])
     selected_window = c1.segmented_control(
         "Alert Window", TIME_OPTIONS, default="24h", key="obs_health_window") or "24h"
+    c2.markdown("<div style='padding-top:26px;'>", unsafe_allow_html=True)
     if c2.button("🔄", key="obs_health_refresh", help="Refresh"):
         st.rerun()
     hours = _parse_hours(selected_window)

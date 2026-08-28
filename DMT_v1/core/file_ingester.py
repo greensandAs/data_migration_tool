@@ -20,6 +20,27 @@ from datetime import datetime
 from metadata import file_ingest_config
 
 
+# Audit columns added by DMT — excluded from COPY INTO column lists
+_AUDIT_COLS = {
+    "DMT_LOADED_AT", "DMT_BATCH_ID", "DMT_SOURCE_FILE",
+    "_LOAD_TS", "_SRC_FILE", "_BATCH_ID",
+}
+
+
+def _get_data_columns(cur, table_fqn: str) -> list[str] | None:
+    """Get table columns excluding DMT audit columns. Returns None if lookup fails."""
+    try:
+        cur.execute(f"SHOW COLUMNS IN TABLE {table_fqn}")
+        rows = cur.fetchall()
+        col_name_idx = next(
+            (i for i, d in enumerate(cur.description) if d[0].upper() == "COLUMN_NAME"), 2)
+        all_cols = [row[col_name_idx] for row in rows]
+        data_cols = [c for c in all_cols if c.upper() not in _AUDIT_COLS]
+        return data_cols if data_cols else None
+    except Exception:
+        return None
+
+
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -409,6 +430,10 @@ def run_ingestion(sf_conn, config: dict, batch_id: str = None,
                 cur, config, stage_path, pattern, fmt_name)
             table_created = True
             result["TABLE_CREATED"] = True
+        else:
+            # Table exists — get data columns excluding DMT audit columns
+            # so COPY INTO targets only file-sourced columns
+            inferred_columns = _get_data_columns(cur, target_fqn)
 
         # Step 4: Execute based on load mode
         if load_mode == "MERGE":

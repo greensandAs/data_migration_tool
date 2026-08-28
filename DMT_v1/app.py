@@ -56,8 +56,8 @@ ST_PENDING = "#58A6FF"
 BORDER = "#263245"
 
 # ── Page config ───────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="DMT v1 | Tiger Analytics",
+    st.set_page_config(
+        page_title="MigrateX | Tiger Analytics",
     page_icon=str(_FAVICON) if _FAVICON.exists() else "🔄",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -443,27 +443,42 @@ def source_type_pill(source_type: str) -> str:
 
 
 def render_header():
-    # Header with AI Assist toggle on the right
-    h_left, h_right = st.columns([3, 1])
-    with h_left:
-        st.markdown(
-            f'<div class="main-header">'
-            f'<div style="background:{TA_NAVY};border-left:6px solid {TA_ORANGE};'
-            f'border-radius:8px;padding:14px 22px;">'
-            f'<div style="font-size:1.4rem;font-weight:700;color:#FFFFFF;">'
-            f'DMT — Data Migration Toolkit</div>'
-            f'<div style="font-size:.78rem;color:{TXT_SECONDARY};margin-top:2px;">'
-            f'Tiger Analytics &middot; Multi-source &middot; Modular &middot; Resumable'
-            f'</div></div></div>', unsafe_allow_html=True)
-    with h_right:
-        st.markdown("<div style='padding-top:18px'>", unsafe_allow_html=True)
+    # Header — Gradient banner with MigrateX branding
+    st.markdown(
+        f'<div class="main-header">'
+        f'<div style="background:linear-gradient(135deg, {TA_NAVY} 0%, #1a2940 60%, #0f1f33 100%);'
+        f'border-radius:10px;padding:18px 28px;position:relative;overflow:hidden;'
+        f'border:1px solid {BORDER};">'
+        # Accent stripe
+        f'<div style="position:absolute;top:0;left:0;width:5px;height:100%;'
+        f'background:linear-gradient(180deg, {TA_ORANGE}, #FF6B35);border-radius:10px 0 0 10px;"></div>'
+        # App name
+        f'<div style="display:flex;align-items:center;justify-content:space-between;">'
+        f'<div>'
+        f'<div style="font-size:1.6rem;font-weight:800;color:#FFFFFF;letter-spacing:-0.5px;">'
+        f'<span style="color:{TA_ORANGE};">Migrate</span>X</div>'
+        f'<div style="font-size:.82rem;color:{TXT_SECONDARY};margin-top:2px;">'
+        f'Accelerate Your Data Journey to Snowflake</div>'
+        f'<div style="font-size:.68rem;color:{TXT_SECONDARY};margin-top:4px;opacity:0.7;">'
+        f'Tiger Analytics &middot; v1.0</div>'
+        f'</div>'
+        # Environment badge + AI toggle area
+        f'<div style="text-align:right;">'
+        f'<span style="background:#1B5E20;color:#A5D6A7;font-size:.65rem;font-weight:700;'
+        f'padding:3px 10px;border-radius:12px;letter-spacing:1px;">PROD</span>'
+        f'</div>'
+        f'</div>'
+        f'</div></div>', unsafe_allow_html=True)
+
+    # AI toggle row below header
+    ai_l, ai_r = st.columns([3, 1])
+    with ai_r:
         st.session_state["_ai_on"] = st.toggle(
             "🤖 AI Assist", value=st.session_state.get("_ai_on", False),
             key="header_ai_toggle",
             help="Enable AI Gateway-powered recommendations and failure explanations. "
                  "Configure per-feature models in DMT_SETTINGS (LLM_MODEL_CONFIG, LLM_MODEL_DDL, LLM_MODEL_HISTORY).")
         if st.session_state["_ai_on"]:
-            # Load available models from DMT_SETTINGS or fall back to hardcoded list
             available_models = _get_available_models()
             default_model = st.session_state.get("_ai_model", AI_MODEL)
             idx = available_models.index(default_model) if default_model in available_models else 0
@@ -471,7 +486,6 @@ def render_header():
                 "Model (override)", available_models,
                 index=idx,
                 key="header_ai_model", label_visibility="collapsed")
-        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_footer():
@@ -479,7 +493,7 @@ def render_footer():
     st.markdown(
         f'<p style="text-align:center;color:{TXT_SECONDARY};font-size:0.8rem;">'
         f'Powered by <span style="color:{TA_ORANGE};font-weight:700;">Tiger Analytics</span>'
-        f' &middot; DMT v1.0</p>', unsafe_allow_html=True)
+        f' &middot; Developed by MDP</p>', unsafe_allow_html=True)
 
 
 # ── Live log panel (fragment-based auto-refresh) ──────────────────────────────
@@ -544,7 +558,8 @@ with st.sidebar:
     else:
         st.markdown(
             f'<div class="sidebar-header">'
-            f'<h4 style="color:{TXT_PRIMARY};text-align:center;margin:0">DMT v1</h4>'
+            f'<h4 style="color:{TXT_PRIMARY};text-align:center;margin:0">'
+            f'<span style="color:{TA_ORANGE};">Migrate</span>X</h4>'
             f'</div>', unsafe_allow_html=True)
 
     # ── Navigation buttons (grouped) ────────────────────────────────────────────
@@ -714,7 +729,7 @@ with st.sidebar:
             f'</div></div>', unsafe_allow_html=True)
 
     st.markdown(f"<br>", unsafe_allow_html=True)
-    st.caption("DMT v1.0.0 · Tiger Analytics")
+    st.caption("MigrateX v1.0 · Tiger Analytics")
 
 # ── Main content ──────────────────────────────────────────────────────────────
 render_header()

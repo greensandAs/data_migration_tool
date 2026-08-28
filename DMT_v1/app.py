@@ -165,7 +165,7 @@ button[data-testid="baseButton-headerNoPadding"] {{ display: none !important; }}
 
 # ── Session state init ────────────────────────────────────────────────────────
 if "current_page" not in st.session_state:
-    st.session_state.current_page = "Dashboard"
+    st.session_state.current_page = "Overview"
 
 
 # ── Secure password resolution ────────────────────────────────────────────────
@@ -583,13 +583,13 @@ live_running_panel = (_fragment(run_every=1.0)(_render_running_panel)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 PAGES = {
-    "Dashboard": render_dashboard,
-    "Connections": render_connections,
-    "Config": render_config,
-    "File Ingest": render_file_ingest,
-    "Snowpipe (Beta)": render_snowpipe_wizard,
-    "DDL": render_ddl,
-    "Run": render_run,
+    "Overview": render_dashboard,
+    "Sources": render_connections,
+    "Pipeline Setup": render_config,
+    "File Loader": render_file_ingest,
+    "Auto-Ingest": render_snowpipe_wizard,
+    "Schema Mapping": render_ddl,
+    "Execute": render_run,
     "Observability": render_observability,
 }
 
@@ -616,19 +616,19 @@ with st.sidebar:
             f'<span style="color:{TA_ORANGE};">Migrate</span>X</h4>'
             f'</div>', unsafe_allow_html=True)
 
-    # ── Navigation (grouped) ────────────────────────────────────────────────────
+    # ── Navigation (collapsible groups) ─────────────────────────────────────────
     st.markdown(
         f'<div style="font-size:.6rem;letter-spacing:2px;text-transform:uppercase;'
         f'color:{TA_ORANGE};font-weight:700;margin:8px 0 6px 0;">Database Migration</div>',
         unsafe_allow_html=True)
 
     NAV_MIGRATION = {
-        "Dashboard": "📊",
-        "Config": "⚙️",
-        "DDL": "🏗️",
-        "Run": "▶️",
+        "Overview": "📊",
+        "Pipeline Setup": "⚙️",
+        "Schema Mapping": "🏗️",
+        "Execute": "▶️",
         "Observability": "📈",
-        "Connections": "🔌",
+        "Sources": "🔌",
     }
     for page_name, icon in NAV_MIGRATION.items():
         is_active = st.session_state.current_page == page_name
@@ -645,8 +645,8 @@ with st.sidebar:
         unsafe_allow_html=True)
 
     NAV_FILE = {
-        "File Ingest": "📁",
-        "Snowpipe (Beta)": "🚿",
+        "File Loader": "📁",
+        "Auto-Ingest": "🔄",
     }
     for page_name, icon in NAV_FILE.items():
         is_active = st.session_state.current_page == page_name

@@ -588,13 +588,49 @@ live_running_panel = (_fragment(run_every=1.0)(_render_running_panel)
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 def _render_help(conn):
-    """Render the User Guide markdown inside the app."""
+    """Render the User Guide markdown inside the app with embedded images."""
+    import base64 as _b64
+    import re as _re
+
     guide_path = HERE / "docs" / "userguide.md"
-    if guide_path.exists():
-        content = guide_path.read_text(encoding="utf-8")
-        st.markdown(content, unsafe_allow_html=True)
-    else:
+    if not guide_path.exists():
         st.warning("User Guide not found. Ensure `docs/userguide.md` exists.")
+        return
+
+    content = guide_path.read_text(encoding="utf-8")
+
+    # Replace markdown image references with base64-embedded images
+    def _embed_image(match):
+        alt = match.group(1)
+        img_rel_path = match.group(2)
+        # Try multiple resolution paths
+        candidates = [
+            HERE / img_rel_path,                    # relative to project root
+            HERE / "docs" / img_rel_path,           # relative to docs/ folder
+        ]
+        img_path = None
+        for c in candidates:
+            if c.exists():
+                img_path = c
+                break
+
+        if img_path:
+            suffix = img_path.suffix.lower()
+            mime = {".png": "image/png", ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg", ".gif": "image/gif",
+                    ".svg": "image/svg+xml"}.get(suffix, "image/png")
+            b64 = _b64.b64encode(img_path.read_bytes()).decode()
+            return (f'<div style="margin:12px 0;">'
+                    f'<img src="data:{mime};base64,{b64}" '
+                    f'style="max-width:100%;border-radius:8px;border:1px solid #263245;" '
+                    f'alt="{alt}">'
+                    f'<div style="font-size:.7rem;color:#7E96B0;margin-top:4px;">{alt}</div>'
+                    f'</div>')
+        else:
+            return f'<div style="font-size:.72rem;color:#F0A742;margin:8px 0;">⚠ Image not found: {img_rel_path}</div>'
+
+    content = _re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', _embed_image, content)
+    st.markdown(content, unsafe_allow_html=True)
 
 
 PAGES = {

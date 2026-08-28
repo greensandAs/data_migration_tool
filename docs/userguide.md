@@ -48,10 +48,10 @@ MigrateX is an enterprise data migration platform that accelerates your journey 
 **Header bar:** Shows on all pages. Source/Connection filters + AI toggle only appear on Database Migration pages.
 
 **Screenshot:** *App header with MigrateX branding, Snowflake context (account, warehouse, role), source filter, and AI toggle*
-![App Header](docs/screenshots/app_header.png)
+![App Header](screenshots/AppHeader.png)
 
 **Screenshot:** *Sidebar navigation with Database Migration and File Ingestion groups*
-![Sidebar Navigation](docs/screenshots/sidebar_nav.png)
+![Sidebar Navigation](screenshots/SidebarNavigation.png)
 
 ---
 
@@ -89,7 +89,7 @@ MigrateX is an enterprise data migration platform that accelerates your journey 
 ```
 
 **Screenshot:** *Sources page showing the connection form and existing connections list*
-![Sources Page](docs/screenshots/sources_page.png)
+![Sources Page](screenshots/Sources.png)
 
 ### Step-by-Step: Add a New Connection
 
@@ -164,10 +164,10 @@ MigrateX is an enterprise data migration platform that accelerates your journey 
 ```
 
 **Screenshot:** *Pipeline Setup showing config summary cards, table grid, and Generate Config button*
-![Pipeline Setup Page](docs/screenshots/pipeline_setup_page.png)
+![Pipeline Setup Page](screenshots/PipelineSetup.png)
 
 **Screenshot:** *Add Table dialog with AI Recommend button*
-![Add Table Dialog](docs/screenshots/pipeline_setup_add_table.png)
+![Add Table Dialog](screenshots/AddTableDialog.png)
 
 ### Step-by-Step: Auto-Discover Tables
 
@@ -255,7 +255,7 @@ MigrateX is an enterprise data migration platform that accelerates your journey 
 ```
 
 **Screenshot:** *Schema Mapping with side-by-side source/Snowflake DDL and column type table*
-![Schema Mapping Page](docs/screenshots/schema_mapping_page.png)
+![Schema Mapping Page](screenshots/SchemaMapping.png)
 
 ### Step-by-Step: View Schema Mapping
 
@@ -323,10 +323,8 @@ MigrateX is an enterprise data migration platform that accelerates your journey 
 ```
 
 **Screenshot:** *Execute page with mode selection and live log output during a pipeline run*
-![Execute Page](docs/screenshots/execute_page.png)
+![Execute Page](screenshots/ExecutePage.png)
 
-**Screenshot:** *Live execution log showing step-by-step progress with row counts*
-![Execute Live Log](docs/screenshots/execute_live_log.png)
 
 ### Step-by-Step: Full Pipeline Run
 

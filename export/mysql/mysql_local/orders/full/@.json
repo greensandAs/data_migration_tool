@@ -21,13 +21,13 @@
     "hostname": "TIGER06099",
     "server": "TIGER06099",
     "serverVersion": "8.0.46",
-    "binlogFile": "TIGER06099-bin.000067",
-    "binlogPosition": 1860,
+    "binlogFile": "TIGER06099-bin.000070",
+    "binlogPosition": 157,
     "gtidExecuted": "",
     "gtidExecutedInconsistent": false,
     "consistent": true,
     "partialRevokes": false,
     "compatibilityOptions": [],
     "capabilities": [],
-    "begin": "2026-08-20 00:22:26"
+    "begin": "2026-08-29 00:00:17"
 }

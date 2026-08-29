@@ -1017,6 +1017,24 @@ def _process_table(config: dict, sf_cfg: dict, get_profile, batch_id: str,
             sf_conn.commit()
         except Exception as le:
             print(f"   (run_log write failed: {le})")
+
+        # Evaluate alert rules after each run
+        try:
+            from core.alerts import evaluate_and_fire
+            evaluate_and_fire(sf_conn, run_context={
+                "source_table": rec.get("source_table"),
+                "status": rec.get("status"),
+                "failed_step": rec.get("failed_step"),
+                "error_message": rec.get("error_message"),
+                "duration_sec": rec.get("duration_sec"),
+                "rows_extracted": rec.get("rows_extracted"),
+                "rows_loaded": rec.get("rows_loaded"),
+                "batch_id": rec.get("batch_id"),
+                "connection_profile": rec.get("connection_profile"),
+            })
+        except Exception as ae:
+            print(f"   (alert evaluation failed: {ae})")
+
         try:
             source_conn.close()
         finally:

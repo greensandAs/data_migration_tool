@@ -598,22 +598,24 @@ def _render_alerts(cur, conn):
 
         ac1, ac2 = st.columns(2)
         action_type = ac1.selectbox("Action Type", [
-            "LOG_ONLY", "WEBHOOK_SLACK", "WEBHOOK_TEAMS", "WEBHOOK_CUSTOM"
+            "LOG_ONLY", "WEBHOOK_SLACK", "WEBHOOK_TEAMS", "WEBHOOK_GCHAT", "WEBHOOK_CUSTOM"
         ], key="obs_action_type",
             format_func=lambda x: {
                 "LOG_ONLY": "Log only (visible in alert history)",
                 "WEBHOOK_SLACK": "Slack webhook",
                 "WEBHOOK_TEAMS": "Microsoft Teams webhook",
+                "WEBHOOK_GCHAT": "Google Chat webhook",
                 "WEBHOOK_CUSTOM": "Custom webhook URL",
             }.get(x, x))
 
         webhook_url = ""
         if action_type != "LOG_ONLY":
             webhook_url = ac2.text_input("Webhook URL",
-                                         placeholder="https://hooks.slack.com/...",
+                                         placeholder="https://chat.googleapis.com/v1/spaces/...",
                                          key="obs_webhook_url")
 
-        if st.button("💾 Save Rule", type="primary", use_container_width=True,
+        btn1, btn2 = st.columns(2)
+        if btn1.button("💾 Save Rule", type="primary", use_container_width=True,
                      key="obs_save_rule"):
             if not rule_name.strip():
                 st.error("Rule name is required.")
@@ -632,6 +634,20 @@ def _render_alerts(cur, conn):
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to save rule: {e}")
+
+        if action_type != "LOG_ONLY" and webhook_url.strip():
+            if bc2.button("🧪 Test", key="obs_test_webhook", use_container_width=True,
+                          help="Send a test message to verify webhook"):
+                with st.spinner("Sending test alert..."):
+                    try:
+                        from core.alerts import send_test_alert
+                        result = send_test_alert(webhook_url.strip(), action_type)
+                        if "success" in result.lower():
+                            st.success(result)
+                        else:
+                            st.error(result)
+                    except Exception as e:
+                        st.error(f"Test failed: {e}")
 
     # ── Alert History ────────────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)

@@ -271,7 +271,7 @@ def _get_type_mapping(sf_cur, config: dict, source_type: str, profile: dict) -> 
         host = profile.get("HOST", "")
         port = profile.get("PORT", 1433)
         schema = profile.get("SCHEMA", "dbo")
-        driver = "ODBC Driver 18 for SQL Server"
+        driver = profile.get("DRIVER") or "ODBC Driver 17 for SQL Server"
         conn_str = (
             f"DRIVER={{{driver}}};SERVER={host},{port};"
             f"DATABASE={config['SOURCE_DB']};"
@@ -555,6 +555,34 @@ def _rule_based_validate(mapping: list[dict], source_type: str) -> str:
     return result
 
 
+def _fallback_mapping_from_sf(sf_cur, config: dict, source_type: str) -> list[dict]:
+    """Fallback: read column info from the Snowflake target table when source is unreachable."""
+    from ddl_generators import RAW_SCHEMA, AUDIT_COLS
+    if source_type == "teradata":
+        from ddl_generators.teradata import _resolve_td_table_name
+        tgt_db = config.get("TARGET_DB") or config["SOURCE_DB"].strip().upper()
+        tgt_table = _resolve_td_table_name(config)
+    else:
+        from ddl_generators import target_db
+        tgt_db = config.get("TARGET_DB") or target_db(config["SOURCE_DB"])
+        tgt_table = config.get("TARGET_TABLE") or config["SOURCE_TABLE"].upper()
+    tgt_schema = config.get("TARGET_SCHEMA") or RAW_SCHEMA
+
+    audit_names = {n.upper() for n, _ in AUDIT_COLS}
+    try:
+        sf_cur.execute(f"""
+            SELECT COLUMN_NAME, DATA_TYPE
+            FROM {tgt_db}.INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = '{tgt_schema}' AND TABLE_NAME = '{tgt_table}'
+            ORDER BY ORDINAL_POSITION
+        """)
+        rows = sf_cur.fetchall()
+        return [{"Column": r[0], "Source Type": "(from Snowflake)", "Snowflake Type": r[1]}
+                for r in rows if r[0].upper() not in audit_names]
+    except Exception:
+        return []
+
+
 def render(conn):
     """Main render function for the DDL page."""
     cur = conn.cursor()
@@ -608,8 +636,13 @@ def render(conn):
             mapping = _with_retry(
                 lambda: _get_type_mapping(cur, config, source_type, sel_profile))
         except Exception as e:
-            st.error(f"Could not build type mapping: {e}")
-            mapping = []
+            # Fallback: reconstruct mapping from Snowflake target table
+            mapping = _fallback_mapping_from_sf(cur, config, source_type)
+            if mapping:
+                st.warning(f"Source unreachable ({type(e).__name__}). "
+                           "Showing columns from Snowflake target table instead.")
+            else:
+                st.error(f"Could not build type mapping: {e}")
 
     # Layout: Source DDL | Snowflake DDL
     st.markdown("---")
@@ -633,7 +666,13 @@ def render(conn):
                     src_ddl = _with_retry(lambda: _get_source_ddl_mysql(
                         sel_profile, config["SOURCE_DB"], config["SOURCE_TABLE"]))
             except Exception as e:
-                src_ddl = f"-- Error fetching source DDL (after 3 attempts): {e}"
+                err_msg = str(e)
+                if "ODBC" in err_msg or "driver" in err_msg.lower():
+                    src_ddl = (f"-- Source DDL unavailable: ODBC driver not installed in this environment.\n"
+                               f"-- Source DDL is fetched when running from a machine with {source_type.upper()} drivers.\n"
+                               f"-- The Snowflake DDL (right panel) shows the target table structure.")
+                else:
+                    src_ddl = f"-- Error fetching source DDL (after 3 attempts): {e}"
         st.code(src_ddl, language="sql")
 
     with col2:

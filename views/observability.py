@@ -148,18 +148,17 @@ def _render_run_logs(cur, conn):
             pivot = chart_df.groupby(["date", "STATUS"]).size().reset_index(name="count")
             pivot_wide = pivot.pivot(index="date", columns="STATUS", values="count").fillna(0)
 
-            # Map colors by status name
+            # Map colors by status — colors must be in alphabetical
+            # column order because st.bar_chart sorts internally
             STATUS_COLORS = {
-                "success": ST_SUCCESS,    # green
                 "failed": ST_FAILED,      # red
-                "skipped": ST_SKIPPED,    # yellow/amber
                 "mismatch": ST_PENDING,   # blue
+                "skipped": ST_SKIPPED,    # yellow/amber
+                "success": ST_SUCCESS,    # green
             }
-            col_order = [c for c in ["success", "failed", "skipped", "mismatch"]
-                         if c in pivot_wide.columns]
-            col_order += [c for c in pivot_wide.columns if c not in col_order]
-            colors = [STATUS_COLORS.get(c, "#888888") for c in col_order]
-            st.bar_chart(pivot_wide[col_order], color=colors,
+            cols_sorted = sorted(pivot_wide.columns)
+            colors = [STATUS_COLORS.get(c, "#888888") for c in cols_sorted]
+            st.bar_chart(pivot_wide[cols_sorted], color=colors,
                          y_label="Runs", x_label="Date")
 
     # Batch grouping

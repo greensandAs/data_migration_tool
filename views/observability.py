@@ -39,9 +39,9 @@ def _query_safe(cur, sql: str, params=None) -> pd.DataFrame:
 
 
 def _parse_hours(window: str) -> int:
-    mapping = {"7d": 168, "4d": 96, "3d": 72, "2d": 48, "24h": 24, "8h": 8, "2h": 2,
-               "12h": 12, "48h": 48 * 1, "72h": 72}
-    return mapping.get(window, 168)
+    mapping = {"30d": 720, "15d": 360, "7d": 168, "4d": 96, "3d": 72, "2d": 48,
+               "24h": 24, "8h": 8, "2h": 2, "12h": 12, "48h": 48, "72h": 72}
+    return mapping.get(window, 24)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -52,10 +52,10 @@ def _render_run_logs(cur, conn):
     profile_filter = None if _profile == "All Connections" else _profile
 
     # Controls
-    TIME_OPTIONS = ["7d", "4d", "3d", "2d", "24h", "8h", "2h"]
+    TIME_OPTIONS = ["30d", "15d", "7d", "4d", "3d", "2d", "24h", "8h", "2h"]
     c1, c2 = st.columns([5, 1])
     selected_window = c1.segmented_control(
-        "Time Window", TIME_OPTIONS, default="7d", key="obs_time_window") or "7d"
+        "Time Window", TIME_OPTIONS, default="24h", key="obs_time_window") or "24h"
     c2.markdown("<div style='padding-top:26px;'>", unsafe_allow_html=True)
     if c2.button("🔄", key="obs_refresh", help="Refresh data"):
         for k in [k for k in st.session_state if k.startswith("_obs_hist_")]:
@@ -146,11 +146,21 @@ def _render_run_logs(cur, conn):
             chart_df["date"] = chart_df["_dt"].dt.date
             pivot = chart_df.groupby(["date", "STATUS"]).size().reset_index(name="count")
             pivot_wide = pivot.pivot(index="date", columns="STATUS", values="count").fillna(0)
+
+            # Map colors by status name
+            STATUS_COLORS = {
+                "success": ST_SUCCESS,    # green
+                "failed": ST_FAILED,      # red
+                "skipped": ST_SKIPPED,    # yellow/amber
+                "mismatch": ST_PENDING,   # blue
+            }
             col_order = [c for c in ["success", "failed", "skipped", "mismatch"]
                          if c in pivot_wide.columns]
             col_order += [c for c in pivot_wide.columns if c not in col_order]
-            st.bar_chart(pivot_wide[col_order],
-                         color=[ST_SUCCESS, ST_FAILED, ST_SKIPPED, ST_PENDING][:len(col_order)])
+            # Ensure color list matches exact column order
+            colors = [STATUS_COLORS.get(c, "#888888") for c in col_order]
+            st.bar_chart(pivot_wide[col_order], color=colors,
+                         y_label="Runs", x_label="Date")
 
     # Batch grouping
     st.markdown("<br>", unsafe_allow_html=True)
@@ -212,7 +222,7 @@ def _render_run_logs(cur, conn):
 # Tab 2: Health Dashboard
 # ══════════════════════════════════════════════════════════════════════════════
 def _render_health(cur):
-    TIME_OPTIONS = ["12h", "24h", "48h", "72h"]
+    TIME_OPTIONS = ["30d", "15d", "7d", "3d", "24h", "12h"]
     c1, c2 = st.columns([5, 1])
     selected_window = c1.segmented_control(
         "Alert Window", TIME_OPTIONS, default="24h", key="obs_health_window") or "24h"

@@ -143,6 +143,7 @@ def _render_run_logs(cur, conn):
         filtered["_dt"] = pd.to_datetime(filtered["INSERTED_AT"], errors="coerce")
         if filtered["_dt"].notna().any():
             chart_df = filtered[["_dt", "STATUS"]].copy()
+            chart_df["STATUS"] = chart_df["STATUS"].str.lower()
             chart_df["date"] = chart_df["_dt"].dt.date
             pivot = chart_df.groupby(["date", "STATUS"]).size().reset_index(name="count")
             pivot_wide = pivot.pivot(index="date", columns="STATUS", values="count").fillna(0)
@@ -157,7 +158,6 @@ def _render_run_logs(cur, conn):
             col_order = [c for c in ["success", "failed", "skipped", "mismatch"]
                          if c in pivot_wide.columns]
             col_order += [c for c in pivot_wide.columns if c not in col_order]
-            # Ensure color list matches exact column order
             colors = [STATUS_COLORS.get(c, "#888888") for c in col_order]
             st.bar_chart(pivot_wide[col_order], color=colors,
                          y_label="Runs", x_label="Date")

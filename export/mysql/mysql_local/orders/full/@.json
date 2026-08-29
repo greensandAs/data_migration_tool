@@ -9,10 +9,10 @@
         "tzUtc": false
     },
     "schemas": [
-        "mtest"
+        "mysql_demo_2908"
     ],
     "basenames": {
-        "mtest": "mtest"
+        "mysql_demo_2908": "mysql_demo_2908"
     },
     "defaultCharacterSet": "utf8mb4",
     "tzUtc": false,
@@ -22,12 +22,12 @@
     "server": "TIGER06099",
     "serverVersion": "8.0.46",
     "binlogFile": "TIGER06099-bin.000070",
-    "binlogPosition": 157,
+    "binlogPosition": 698462525,
     "gtidExecuted": "",
     "gtidExecutedInconsistent": false,
     "consistent": true,
     "partialRevokes": false,
     "compatibilityOptions": [],
     "capabilities": [],
-    "begin": "2026-08-29 00:00:17"
+    "begin": "2026-08-29 20:53:11"
 }

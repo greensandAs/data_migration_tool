@@ -1,12 +1,12 @@
 {
-    "end": "2026-08-29 00:00:17",
-    "dataBytes": 156,
+    "end": "2026-08-29 20:53:18",
+    "dataBytes": 80663388,
     "tableDataBytes": {
-        "mtest": {
-            "orders": 156
+        "mysql_demo_2908": {
+            "orders": 80663388
         }
     },
     "chunkFileBytes": {
-        "mtest@orders@@0.tsv.zst": 156
+        "mysql_demo_2908@orders@@0.tsv.zst": 80663388
     }
 }

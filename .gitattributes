@@ -1,1 +1,0 @@
-demo/*_setup.sql filter=lfs diff=lfs merge=lfs -text

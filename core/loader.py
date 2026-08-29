@@ -97,8 +97,12 @@ def ext_stage_path(config: dict, sub: str, source_type: str = "mysql") -> str:
     fq_stage = f"HISTLOAD_DB.META.{stage_name}" if "." not in stage_name else stage_name
 
     # The upload path structure: dmt/<source_type>/<connection>/<schema>/<table>/<sub>/
+    # NOTE: The stage URL already includes any base prefix (e.g., s3://bucket/dmt/),
+    # so the stage reference should NOT duplicate it. We use the same relative path
+    # that the S3 upload uses, but the stage base already covers the bucket prefix.
     conn_name = config.get("CONNECTION_PROFILE", "default")
-    path = f"@{fq_stage}/dmt/{source_type}/{conn_name}/{config['SOURCE_DB']}/{config['SOURCE_TABLE']}/{sub}"
+    relative_path = f"{source_type}/{conn_name}/{config['SOURCE_DB']}/{config['SOURCE_TABLE']}/{sub}"
+    path = f"@{fq_stage}/{relative_path}"
     return path
 
 

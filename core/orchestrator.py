@@ -321,12 +321,15 @@ def _source_connect_with_retry(source_type: str, src_cfg: dict,
 # ── Main run entry point ──────────────────────────────────────────────────────
 
 def run(force_full: bool = False, only_table: str | None = None,
+        only_tables: list[str] | None = None,
         resume: bool = False, max_parallel: int = DEFAULT_MAX_PARALLEL,
         execution_mode: str | None = None, profile: str | None = None):
     """Main pipeline execution.
     
     execution_mode: override per-table EXECUTION_MODE. One of FULL, EXTRACT_ONLY, LOAD_ONLY.
     profile: filter tables to only those belonging to this CONNECTION_PROFILE.
+    only_table: run a single table (backward compat).
+    only_tables: run a specific set of tables.
     """
     sf_cfg = _build_sf_cfg()
     sf_conn = loader.get_sf_conn(sf_cfg)
@@ -338,6 +341,9 @@ def run(force_full: bool = False, only_table: str | None = None,
     configs = config_manager.list_active(cur, connection_profile=profile)
     if only_table:
         configs = [c for c in configs if c["SOURCE_TABLE"] == only_table]
+    elif only_tables:
+        tbl_set = set(t.upper() for t in only_tables)
+        configs = [c for c in configs if c["SOURCE_TABLE"].upper() in tbl_set]
 
     if not configs:
         print("No active tables to process.")
@@ -1054,17 +1060,24 @@ if __name__ == "__main__":
     extract_only = "--extract-only" in args
     load_only = "--load-only" in args
     only_table = None
+    only_tables = []
     only_profile = None
     i = 0
     while i < len(args):
         if args[i] == "--table" and i + 1 < len(args):
-            only_table = args[i + 1]
+            only_tables.append(args[i + 1])
             i += 2
         elif args[i] == "--profile" and i + 1 < len(args):
             only_profile = args[i + 1]
             i += 2
         else:
             i += 1
+
+    # Single table backward compat
+    if len(only_tables) == 1:
+        only_table = only_tables[0]
+    elif len(only_tables) > 1:
+        only_table = None  # handled below
 
     # Determine execution mode from CLI flags
     exec_mode = None
@@ -1074,6 +1087,7 @@ if __name__ == "__main__":
         exec_mode = "LOAD_ONLY"
 
     failed = run(force_full=force_full, only_table=only_table,
+                 only_tables=only_tables if len(only_tables) > 1 else None,
                  resume=resume_mode, execution_mode=exec_mode,
                  profile=only_profile)
     raise SystemExit(1 if failed else 0)

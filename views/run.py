@@ -66,14 +66,19 @@ def render(conn):
         cur.close()
         return
 
-    # -- Table selector (searchable with label) --
+    # -- Table selector (multi-select) --
     active_tables = config_manager.list_active(cur, connection_profile=profile_filter)
-    table_options = ["All Active Tables"] + [
-        f"{t['SOURCE_DB']}.{t['SOURCE_TABLE']}" for t in active_tables]
+    table_names = [f"{t['SOURCE_DB']}.{t['SOURCE_TABLE']}" for t in active_tables]
 
-    sel_table = st.selectbox("Select Table", table_options, key="run_table_sel")
+    run_all = st.checkbox("Run All Active Tables", value=True, key="run_all_tables")
+    if run_all:
+        selected_tables = table_names
+    else:
+        selected_tables = st.multiselect(
+            "Select Tables", table_names, default=[], key="run_table_multi",
+            placeholder="Choose one or more tables...")
 
-    # -- Action buttons (single row, no stop here) --
+    # -- Action buttons (single row) --
     b1, b2, b3, b4 = st.columns(4)
     full_clicked = b1.button("▶️ Full Run", type="primary",
                              use_container_width=True, disabled=_running)
@@ -86,25 +91,32 @@ def render(conn):
 
     # -- Launch logic --
     def _launch(mode_flag: str | None, label: str):
+        if not selected_tables:
+            st.warning("Select at least one table to run.")
+            return
         args = ["core/orchestrator.py"]
         if profile_filter:
             args += ["--profile", profile_filter]
-        if sel_table != "All Active Tables":
-            _, tbl_name = sel_table.split(".", 1)
-            args += ["--table", tbl_name]
+        if not run_all:
+            for tbl in selected_tables:
+                _, tbl_name = tbl.split(".", 1)
+                args += ["--table", tbl_name]
         if mode_flag:
             args.append(mode_flag)
         shared.start_job(args, label)
         st.rerun()
 
     if full_clicked and not _running:
-        _launch(None, f"Full Run · {sel_table}")
+        _label = "Full Run · All" if run_all else f"Full Run · {len(selected_tables)} table(s)"
+        _launch(None, _label)
     elif extract_clicked and not _running:
-        _launch("--extract-only", f"Extract · {sel_table}")
+        _label = "Extract · All" if run_all else f"Extract · {len(selected_tables)} table(s)"
+        _launch("--extract-only", _label)
     elif load_clicked and not _running:
-        _launch("--load-only", f"Load · {sel_table}")
+        _label = "Load · All" if run_all else f"Load · {len(selected_tables)} table(s)"
+        _launch("--load-only", _label)
     elif resume_clicked and not _running:
-        _launch("--resume", f"Resume · {sel_table}")
+        _launch("--resume", "Resume failed")
 
     # -- Resume from dashboard retry button --
     if "run_table_id" in st.session_state:

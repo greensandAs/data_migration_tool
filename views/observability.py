@@ -332,6 +332,9 @@ def _render_health(cur):
 # Tab 3: Performance
 # ══════════════════════════════════════════════════════════════════════════════
 def _render_performance(cur):
+    _profile = st.session_state.get("selected_profile", "All Connections")
+    profile_filter = None if _profile == "All Connections" else _profile
+
     TIME_OPTIONS = ["30d", "15d", "7d", "3d", "24h", "12h"]
     c1, c2 = st.columns([5, 1])
     selected_window = c1.segmented_control(
@@ -344,19 +347,24 @@ def _render_performance(cur):
     hours = _parse_hours(selected_window)
 
     # ── Fetch run data ────────────────────────────────────────────────────────
-    perf_key = f"_obs_perf_{selected_window}"
+    perf_key = f"_obs_perf_{_profile}_{selected_window}"
     if perf_key not in st.session_state:
         for k in [k for k in st.session_state if k.startswith("_obs_perf_") and k != perf_key]:
             del st.session_state[k]
+        conditions = [f"INSERTED_AT >= DATEADD('hour', -{hours}, CURRENT_TIMESTAMP())",
+                      "STATUS = 'success'", "DURATION_SEC IS NOT NULL", "DURATION_SEC > 0"]
+        params = []
+        if profile_filter:
+            conditions.append("CONNECTION_PROFILE = %s")
+            params.append(profile_filter)
+        where = "WHERE " + " AND ".join(conditions)
         st.session_state[perf_key] = _query_safe(cur, f"""
-            SELECT RUN_ID, BATCH_ID, SOURCE_DB, SOURCE_TABLE, TARGET_TABLE,
-                   LOAD_TYPE, STATUS, DURATION_SEC, ROWS_EXTRACTED, ROWS_LOADED,
-                   RUN_START, RUN_END, INSERTED_AT
-            FROM HISTLOAD_DB.META.RUN_LOG
-            WHERE INSERTED_AT >= DATEADD('hour', -{hours}, CURRENT_TIMESTAMP())
-              AND STATUS = 'success' AND DURATION_SEC IS NOT NULL AND DURATION_SEC > 0
+            SELECT RUN_ID, BATCH_ID, CONNECTION_PROFILE, SOURCE_DB, SOURCE_TABLE,
+                   TARGET_TABLE, LOAD_TYPE, STATUS, DURATION_SEC,
+                   ROWS_EXTRACTED, ROWS_LOADED, RUN_START, RUN_END, INSERTED_AT
+            FROM HISTLOAD_DB.META.RUN_LOG {where}
             ORDER BY INSERTED_AT DESC
-        """)
+        """, params or None)
 
     df = st.session_state[perf_key]
     if df.empty:
@@ -433,17 +441,22 @@ def _render_performance(cur):
 
     # ── Step Breakdown ────────────────────────────────────────────────────────
     with pt3:
-        steps_df = _query_safe(cur, f"""
-            SELECT s.SOURCE_TABLE, s.STEP_NAME,
-                   AVG(DATEDIFF('second', s.STARTED_AT, s.ENDED_AT)) AS AVG_SEC,
-                   COUNT(*) AS RUNS
-            FROM HISTLOAD_DB.META.PIPELINE_STEP_LOG s
-            WHERE s.STATUS = 'success'
-              AND s.STARTED_AT >= DATEADD('hour', -{hours}, CURRENT_TIMESTAMP())
-              AND s.ENDED_AT IS NOT NULL
-            GROUP BY s.SOURCE_TABLE, s.STEP_NAME
-            ORDER BY s.SOURCE_TABLE, AVG_SEC DESC
-        """)
+        tbl_list = df["SOURCE_TABLE"].dropna().unique().tolist()
+        steps_df = pd.DataFrame()
+        if tbl_list:
+            placeholders = ", ".join(["%s"] * len(tbl_list))
+            steps_df = _query_safe(cur, f"""
+                SELECT s.SOURCE_TABLE, s.STEP_NAME,
+                       AVG(DATEDIFF('second', s.STARTED_AT, s.ENDED_AT)) AS AVG_SEC,
+                       COUNT(*) AS RUNS
+                FROM HISTLOAD_DB.META.PIPELINE_STEP_LOG s
+                WHERE s.STATUS = 'success'
+                  AND s.STARTED_AT >= DATEADD('hour', -{hours}, CURRENT_TIMESTAMP())
+                  AND s.ENDED_AT IS NOT NULL
+                  AND s.SOURCE_TABLE IN ({placeholders})
+                GROUP BY s.SOURCE_TABLE, s.STEP_NAME
+                ORDER BY s.SOURCE_TABLE, AVG_SEC DESC
+            """, tbl_list)
         if steps_df.empty:
             st.info("No step-level timing data yet. Run pipelines to populate.")
         else:

@@ -1,11 +1,12 @@
-# Observability page — unified Run Logs + Health Dashboard + Alerts & Rules.
+# Observability page — unified Run Logs + Health Dashboard + Performance + Alerts.
 # Co-authored with CoCo
 """views/observability.py — Single pane of glass for pipeline observability.
 
-Three tabs:
+Four tabs:
   1. Run Logs — chronological execution history with AI failure explainer
   2. Health Dashboard — proactive health checks (failed, stale, mismatches)
-  3. Alerts & Rules — configurable alert rules + webhook notifications
+  3. Performance — throughput, duration trends, slowest tables, step breakdown
+  4. Alerts & Rules — configurable alert rules + webhook notifications
 """
 from __future__ import annotations
 
@@ -328,7 +329,174 @@ def _render_health(cur):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Tab 3: Alerts & Rules
+# Tab 3: Performance
+# ══════════════════════════════════════════════════════════════════════════════
+def _render_performance(cur):
+    TIME_OPTIONS = ["30d", "15d", "7d", "3d", "24h", "12h"]
+    c1, c2 = st.columns([5, 1])
+    selected_window = c1.segmented_control(
+        "Time Window", TIME_OPTIONS, default="7d", key="obs_perf_window") or "7d"
+    c2.markdown("<div style='padding-top:26px;'>", unsafe_allow_html=True)
+    if c2.button("🔄", key="obs_perf_refresh", help="Refresh"):
+        for k in [k for k in st.session_state if k.startswith("_obs_perf_")]:
+            del st.session_state[k]
+        st.rerun()
+    hours = _parse_hours(selected_window)
+
+    # ── Fetch run data ────────────────────────────────────────────────────────
+    perf_key = f"_obs_perf_{selected_window}"
+    if perf_key not in st.session_state:
+        for k in [k for k in st.session_state if k.startswith("_obs_perf_") and k != perf_key]:
+            del st.session_state[k]
+        st.session_state[perf_key] = _query_safe(cur, f"""
+            SELECT RUN_ID, BATCH_ID, SOURCE_DB, SOURCE_TABLE, TARGET_TABLE,
+                   LOAD_TYPE, STATUS, DURATION_SEC, ROWS_EXTRACTED, ROWS_LOADED,
+                   RUN_START, RUN_END, INSERTED_AT
+            FROM HISTLOAD_DB.META.RUN_LOG
+            WHERE INSERTED_AT >= DATEADD('hour', -{hours}, CURRENT_TIMESTAMP())
+              AND STATUS = 'success' AND DURATION_SEC IS NOT NULL AND DURATION_SEC > 0
+            ORDER BY INSERTED_AT DESC
+        """)
+
+    df = st.session_state[perf_key]
+    if df.empty:
+        empty_state("📊", "No Performance Data",
+                    "Successful pipeline runs will appear here with timing metrics.")
+        return
+
+    # ── Summary cards ─────────────────────────────────────────────────────────
+    full_df = df[df["LOAD_TYPE"] == "full"]
+    incr_df = df[df["LOAD_TYPE"] == "incremental"]
+    avg_full = round(full_df["DURATION_SEC"].mean(), 1) if not full_df.empty else 0
+    avg_incr = round(incr_df["DURATION_SEC"].mean(), 1) if not incr_df.empty else 0
+    total_rows = int(df["ROWS_LOADED"].sum())
+    total_dur = df["DURATION_SEC"].sum()
+    throughput = round(total_rows / total_dur, 0) if total_dur > 0 else 0
+
+    st.markdown(f"""<div class="cfg-summary">
+        <div class="cfg-mini-card" style="border-left:3px solid {ST_PENDING}">
+            <div class="mc-val" style="color:{ST_PENDING}">{avg_full}s</div>
+            <div class="mc-lbl">Avg Full Load</div></div>
+        <div class="cfg-mini-card" style="border-left:3px solid {ST_SUCCESS}">
+            <div class="mc-val" style="color:{ST_SUCCESS}">{avg_incr}s</div>
+            <div class="mc-lbl">Avg Incremental</div></div>
+        <div class="cfg-mini-card" style="border-left:3px solid {TA_ORANGE}">
+            <div class="mc-val" style="color:{TA_ORANGE}">{throughput:,.0f}</div>
+            <div class="mc-lbl">Rows/sec</div></div>
+        <div class="cfg-mini-card" style="border-left:3px solid {TXT_LABEL}">
+            <div class="mc-val" style="color:{TXT_PRIMARY}">{total_rows:,}</div>
+            <div class="mc-lbl">Total Rows Loaded</div></div>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Sub-tabs ──────────────────────────────────────────────────────────────
+    pt1, pt2, pt3, pt4 = st.tabs([
+        "📈 Duration Trend", "🐢 Slowest Tables", "🔧 Step Breakdown", "📦 Batch Summary"
+    ])
+
+    # ── Duration Trend ────────────────────────────────────────────────────────
+    with pt1:
+        df["_dt"] = pd.to_datetime(df["INSERTED_AT"], errors="coerce")
+        df["_date"] = df["_dt"].dt.date
+        trend = df.groupby(["_date", "LOAD_TYPE"])["DURATION_SEC"].mean().reset_index()
+        trend_wide = trend.pivot(index="_date", columns="LOAD_TYPE", values="DURATION_SEC").fillna(0)
+        cols_sorted = sorted(trend_wide.columns)
+        LOAD_COLORS = {"full": ST_PENDING, "incremental": ST_SUCCESS}
+        colors = [LOAD_COLORS.get(c, "#888888") for c in cols_sorted]
+        if not trend_wide.empty:
+            st.caption("Average duration (seconds) per day by load type")
+            st.line_chart(trend_wide[cols_sorted], color=colors,
+                          y_label="Seconds", x_label="Date")
+        else:
+            st.info("Not enough data points for trend chart.")
+
+    # ── Slowest Tables ────────────────────────────────────────────────────────
+    with pt2:
+        slowest = (df.groupby("SOURCE_TABLE")
+                   .agg(AVG_SEC=("DURATION_SEC", "mean"),
+                        MAX_SEC=("DURATION_SEC", "max"),
+                        RUNS=("RUN_ID", "count"),
+                        AVG_ROWS=("ROWS_LOADED", "mean"))
+                   .sort_values("AVG_SEC", ascending=False)
+                   .head(10)
+                   .reset_index())
+        slowest["AVG_SEC"] = slowest["AVG_SEC"].round(1)
+        slowest["MAX_SEC"] = slowest["MAX_SEC"].round(1)
+        slowest["AVG_ROWS"] = slowest["AVG_ROWS"].round(0).astype(int)
+        st.caption("Top 10 slowest tables by average duration")
+        st.dataframe(slowest, use_container_width=True, hide_index=True)
+        if not slowest.empty:
+            chart_data = slowest.set_index("SOURCE_TABLE")["AVG_SEC"]
+            st.bar_chart(chart_data, color=TA_ORANGE, y_label="Avg Seconds",
+                         x_label="Table", horizontal=True)
+
+    # ── Step Breakdown ────────────────────────────────────────────────────────
+    with pt3:
+        steps_df = _query_safe(cur, f"""
+            SELECT s.SOURCE_TABLE, s.STEP_NAME,
+                   AVG(DATEDIFF('second', s.STARTED_AT, s.ENDED_AT)) AS AVG_SEC,
+                   COUNT(*) AS RUNS
+            FROM HISTLOAD_DB.META.PIPELINE_STEP_LOG s
+            WHERE s.STATUS = 'success'
+              AND s.STARTED_AT >= DATEADD('hour', -{hours}, CURRENT_TIMESTAMP())
+              AND s.ENDED_AT IS NOT NULL
+            GROUP BY s.SOURCE_TABLE, s.STEP_NAME
+            ORDER BY s.SOURCE_TABLE, AVG_SEC DESC
+        """)
+        if steps_df.empty:
+            st.info("No step-level timing data yet. Run pipelines to populate.")
+        else:
+            st.caption("Average seconds per pipeline step, grouped by table")
+            tables = sorted(steps_df["SOURCE_TABLE"].unique())
+            sel_table = st.selectbox("Table", tables, key="perf_step_table")
+            tbl_steps = steps_df[steps_df["SOURCE_TABLE"] == sel_table].copy()
+            if not tbl_steps.empty:
+                tbl_steps["AVG_SEC"] = tbl_steps["AVG_SEC"].round(1)
+                STEP_COLORS = {
+                    "ddl": "#58A6FF", "extract": "#F0A742", "upload": "#BC8CF2",
+                    "load": "#34D058", "merge": "#F15A22", "validate": "#7E96B0",
+                    "watermark": "#3FB8AF", "schema_drift": "#E8E8E8",
+                }
+                st.dataframe(tbl_steps[["STEP_NAME", "AVG_SEC", "RUNS"]],
+                             use_container_width=True, hide_index=True)
+                chart_steps = tbl_steps.set_index("STEP_NAME")["AVG_SEC"]
+                step_colors = [STEP_COLORS.get(s, "#888888") for s in chart_steps.index]
+                st.bar_chart(chart_steps, color=step_colors[0] if len(set(step_colors)) == 1 else TA_ORANGE,
+                             y_label="Avg Seconds", x_label="Step")
+
+    # ── Batch Summary ─────────────────────────────────────────────────────────
+    with pt4:
+        if "BATCH_ID" not in df.columns or df["BATCH_ID"].isna().all():
+            st.info("No batch data available.")
+        else:
+            batch_perf = (df.groupby("BATCH_ID")
+                         .agg(TABLES=("SOURCE_TABLE", "nunique"),
+                              TOTAL_SEC=("DURATION_SEC", "sum"),
+                              TOTAL_ROWS=("ROWS_LOADED", "sum"),
+                              RUN_TIME=("INSERTED_AT", "min"))
+                         .sort_values("RUN_TIME", ascending=False)
+                         .head(20)
+                         .reset_index())
+            batch_perf["TOTAL_SEC"] = batch_perf["TOTAL_SEC"].round(1)
+            batch_perf["TOTAL_ROWS"] = batch_perf["TOTAL_ROWS"].astype(int)
+            batch_perf["THROUGHPUT"] = (batch_perf["TOTAL_ROWS"] / batch_perf["TOTAL_SEC"].replace(0, 1)).round(0).astype(int)
+            st.caption("Last 20 batch runs — total duration and throughput")
+            st.dataframe(
+                batch_perf[["BATCH_ID", "RUN_TIME", "TABLES", "TOTAL_SEC", "TOTAL_ROWS", "THROUGHPUT"]],
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "BATCH_ID": st.column_config.TextColumn("Batch ID", width="medium"),
+                    "RUN_TIME": st.column_config.DatetimeColumn("Time", format="YYYY-MM-DD HH:mm"),
+                    "TABLES": st.column_config.NumberColumn("Tables"),
+                    "TOTAL_SEC": st.column_config.NumberColumn("Duration (s)", format="%.1f"),
+                    "TOTAL_ROWS": st.column_config.NumberColumn("Rows", format="%d"),
+                    "THROUGHPUT": st.column_config.NumberColumn("Rows/sec", format="%d"),
+                })
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tab 4: Alerts & Rules
 # ══════════════════════════════════════════════════════════════════════════════
 def _render_alerts(cur, conn):
     st.markdown(
@@ -477,8 +645,8 @@ def render(conn):
 
     cur = conn.cursor()
 
-    tab_logs, tab_health, tab_alerts = st.tabs([
-        "📜 Run Logs", "🩺 Health Dashboard", "🔔 Alerts & Rules"
+    tab_logs, tab_health, tab_perf, tab_alerts = st.tabs([
+        "📜 Run Logs", "🩺 Health Dashboard", "📊 Performance", "🔔 Alerts & Rules"
     ])
 
     with tab_logs:
@@ -486,6 +654,9 @@ def render(conn):
 
     with tab_health:
         _render_health(cur)
+
+    with tab_perf:
+        _render_performance(cur)
 
     with tab_alerts:
         _render_alerts(cur, conn)

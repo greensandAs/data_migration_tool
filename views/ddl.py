@@ -53,12 +53,25 @@ def _get_source_ddl_mysql(profile: dict, source_db: str, source_table: str) -> s
     return row[1] if row else f"-- Could not retrieve DDL for {source_db}.{source_table}"
 
 
+def _mssql_driver(profile: dict) -> str:
+    """Resolve MSSQL ODBC driver from profile EXTRA_PARAMS or env."""
+    import json
+    extras = profile.get("EXTRA_PARAMS") or {}
+    if isinstance(extras, str):
+        try:
+            extras = json.loads(extras)
+        except Exception:
+            extras = {}
+    return (extras.get("driver")
+            or os.getenv("MSSQL_DRIVER", "ODBC Driver 17 for SQL Server"))
+
+
 def _get_source_ddl_mssql(profile: dict, source_db: str, source_table: str,
                            source_schema: str = "dbo") -> str:
     """Extract CREATE TABLE DDL from MSSQL via INFORMATION_SCHEMA."""
     import pyodbc
     password = profile.get("PASSWORD") or os.getenv(profile.get("AUTH_SECRET") or "", "") or ""
-    driver = profile.get("DRIVER") or "ODBC Driver 17 for SQL Server"
+    driver = _mssql_driver(profile)
     host = str(profile["HOST"])
     port = int(profile.get("PORT") or 1433)
     conn_str = (
@@ -271,7 +284,7 @@ def _get_type_mapping(sf_cur, config: dict, source_type: str, profile: dict) -> 
         host = profile.get("HOST", "")
         port = profile.get("PORT", 1433)
         schema = profile.get("SCHEMA", "dbo")
-        driver = profile.get("DRIVER") or "ODBC Driver 17 for SQL Server"
+        driver = _mssql_driver(profile)
         conn_str = (
             f"DRIVER={{{driver}}};SERVER={host},{port};"
             f"DATABASE={config['SOURCE_DB']};"

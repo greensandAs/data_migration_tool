@@ -330,8 +330,9 @@ def _discover_tables_mssql(profile: dict, schema: str, password: str) -> list[di
         f"DATABASE={schema};"
         f"UID={profile.get('USERNAME', '')};PWD={password};"
         "Encrypt=yes;TrustServerCertificate=yes;"
+        "LoginTimeout=10;Connection Timeout=10;"
     )
-    mssql_conn = pyodbc.connect(conn_str)
+    mssql_conn = pyodbc.connect(conn_str, timeout=10)
     cur = mssql_conn.cursor()
 
     cur.execute(
@@ -564,8 +565,9 @@ def _ai_recommend(source_db: str, source_table: str, profile: dict, sf_conn=None
             f"DATABASE={source_db};"
             f"UID={profile.get('USERNAME', '')};PWD={password};"
             "Encrypt=yes;TrustServerCertificate=yes;"
+            "LoginTimeout=10;Connection Timeout=10;"
         )
-        mssql_conn = pyodbc.connect(conn_str)
+        mssql_conn = pyodbc.connect(conn_str, timeout=10)
         cur = mssql_conn.cursor()
         cur.execute(
             "SELECT c.COLUMN_NAME, c.DATA_TYPE, c.CHARACTER_MAXIMUM_LENGTH, "
@@ -877,8 +879,9 @@ def render(conn):
     # ── Build configuration (auto-discover) ───────────────────────────────────
     theme.section_header(f"Build Configuration — {sel_profile_name}")
 
-    # Single row: Schema dropdown | Generate Config | Add Table — vertically aligned
-    col_schema, col_gen, col_add = st.columns([3, 2, 2])
+    # Layout: for MSSQL we need DB+Schema dropdowns, so use wider schema column
+    _is_mssql = sel_profile["SOURCE_TYPE"] == "mssql"
+    col_schema, col_gen, col_add = st.columns([4, 2, 2] if _is_mssql else [3, 2, 2])
 
     sel_schema = None
     if sel_profile["SOURCE_TYPE"] == "mysql":
@@ -906,79 +909,115 @@ def render(conn):
             col_schema.error(f"Cannot connect: {e}")
             sel_schema = col_schema.text_input("Teradata Database (manual)", key="cfg_td_schema_manual")
     elif sel_profile["SOURCE_TYPE"] == "mssql":
-        try:
-            import pyodbc
-            extras = sel_profile.get("EXTRA_PARAMS") or {}
-            if isinstance(extras, str):
-                import json
+        # Use cached MSSQL metadata to avoid blocking reconnection on every rerun
+        _mssql_cache_key = f"_mssql_meta_{sel_profile.get('PROFILE_NAME', '')}"
+        _mssql_cached = st.session_state.get(_mssql_cache_key)
+
+        if _mssql_cached and not st.session_state.get("_mssql_refresh"):
+            mssql_dbs = _mssql_cached.get("databases", [])
+            mssql_all_schemas = _mssql_cached.get("schemas", {})
+        else:
+            mssql_dbs = []
+            mssql_all_schemas = {}
+            try:
+                import pyodbc
+                extras = sel_profile.get("EXTRA_PARAMS") or {}
+                if isinstance(extras, str):
+                    import json
+                    try:
+                        extras = json.loads(extras)
+                    except ValueError:
+                        extras = {}
+                driver = extras.get("driver", "ODBC Driver 18 for SQL Server")
+                mssql_password = sel_profile.get("PASSWORD") or os.getenv(sel_profile.get("AUTH_SECRET") or "", "") or ""
+                host = sel_profile.get("HOST", "")
+                port = sel_profile.get("PORT", 1433)
+
+                conn_str_base = (
+                    f"DRIVER={{{driver}}};SERVER={host},{port};"
+                    f"UID={sel_profile.get('USERNAME', '')};PWD={mssql_password};"
+                    "Encrypt=yes;TrustServerCertificate=yes;"
+                    "LoginTimeout=5;Connection Timeout=5;"
+                )
+                mssql_conn = pyodbc.connect(conn_str_base, timeout=5)
+                mssql_cur = mssql_conn.cursor()
+                mssql_cur.execute(
+                    "SELECT name FROM sys.databases "
+                    "WHERE name NOT IN ('master','tempdb','model','msdb') "
+                    "AND state_desc = 'ONLINE' ORDER BY name")
+                mssql_dbs = [r[0] for r in mssql_cur.fetchall()]
+                if not mssql_dbs:
+                    mssql_cur.execute("SELECT DB_NAME()")
+                    mssql_dbs = [mssql_cur.fetchone()[0]]
+                mssql_cur.close()
+                mssql_conn.close()
+
+                # Cache it
+                st.session_state[_mssql_cache_key] = {"databases": mssql_dbs, "schemas": {}}
+                st.session_state.pop("_mssql_refresh", None)
+            except Exception as e:
+                col_schema.error(f"Cannot connect: {e}")
+                sel_schema = col_schema.text_input(
+                    "MSSQL Database (manual)", key="cfg_mssql_schema_manual",
+                    help="Enter database name manually if auto-connect fails")
+                st.session_state["_mssql_source_schema"] = col_schema.text_input(
+                    "MSSQL Schema (manual)", value="dbo", key="cfg_mssql_schema_manual2")
+
+        if mssql_dbs:
+            mssql_db_col, mssql_sch_col = col_schema.columns(2)
+            sel_db = mssql_db_col.selectbox(
+                "Database", mssql_dbs, key="cfg_mssql_db")
+
+            # Get schemas for selected DB (cached per DB)
+            if sel_db not in mssql_all_schemas:
                 try:
-                    extras = json.loads(extras)
-                except ValueError:
-                    extras = {}
-            driver = extras.get("driver", "ODBC Driver 18 for SQL Server")
-            mssql_password = sel_profile.get("PASSWORD") or os.getenv(sel_profile.get("AUTH_SECRET") or "", "") or ""
-            host = sel_profile.get("HOST", "")
-            port = sel_profile.get("PORT", 1433)
+                    import pyodbc
+                    extras = sel_profile.get("EXTRA_PARAMS") or {}
+                    if isinstance(extras, str):
+                        import json
+                        try:
+                            extras = json.loads(extras)
+                        except ValueError:
+                            extras = {}
+                    driver = extras.get("driver", "ODBC Driver 18 for SQL Server")
+                    mssql_password = sel_profile.get("PASSWORD") or os.getenv(sel_profile.get("AUTH_SECRET") or "", "") or ""
+                    host = sel_profile.get("HOST", "")
+                    port = sel_profile.get("PORT", 1433)
 
-            # Connect to get database list
-            conn_str_base = (
-                f"DRIVER={{{driver}}};SERVER={host},{port};"
-                f"UID={sel_profile.get('USERNAME', '')};PWD={mssql_password};"
-                "Encrypt=yes;TrustServerCertificate=yes;"
-            )
-            mssql_conn = pyodbc.connect(conn_str_base)
-            mssql_cur = mssql_conn.cursor()
+                    conn_str_db = (
+                        f"DRIVER={{{driver}}};SERVER={host},{port};"
+                        f"DATABASE={sel_db};"
+                        f"UID={sel_profile.get('USERNAME', '')};PWD={mssql_password};"
+                        "Encrypt=yes;TrustServerCertificate=yes;"
+                        "LoginTimeout=5;Connection Timeout=5;"
+                    )
+                    mssql_conn3 = pyodbc.connect(conn_str_db, timeout=5)
+                    mssql_cur3 = mssql_conn3.cursor()
+                    mssql_cur3.execute(
+                        "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA "
+                        "WHERE SCHEMA_NAME NOT IN ('sys','INFORMATION_SCHEMA','guest') "
+                        "AND SCHEMA_NAME NOT LIKE 'db[_]%' "
+                        "ORDER BY SCHEMA_NAME")
+                    mssql_schemas = [r[0] for r in mssql_cur3.fetchall()]
+                    mssql_cur3.close()
+                    mssql_conn3.close()
 
-            # Get databases
-            mssql_cur.execute(
-                "SELECT name FROM sys.databases "
-                "WHERE name NOT IN ('master','tempdb','model','msdb') "
-                "AND state_desc = 'ONLINE' ORDER BY name")
-            mssql_dbs = [r[0] for r in mssql_cur.fetchall()]
+                    if not mssql_schemas:
+                        mssql_schemas = ["dbo"]
+                    mssql_all_schemas[sel_db] = mssql_schemas
+                    # Update cache
+                    if _mssql_cache_key in st.session_state:
+                        st.session_state[_mssql_cache_key]["schemas"] = mssql_all_schemas
+                except Exception as e:
+                    mssql_all_schemas[sel_db] = ["dbo"]
+                    col_schema.warning(f"Schema lookup failed: {e}")
 
-            # If no user databases found, get current DB name
-            if not mssql_dbs:
-                mssql_cur.execute("SELECT DB_NAME()")
-                mssql_dbs = [mssql_cur.fetchone()[0]]
-
-            mssql_cur.close()
-            mssql_conn.close()
-
-            # Show database dropdown
-            sel_db = col_schema.selectbox(
-                "MSSQL Database", mssql_dbs, key="cfg_mssql_db")
-
-            # Connect to selected database to get schemas
-            conn_str_db = (
-                f"DRIVER={{{driver}}};SERVER={host},{port};"
-                f"DATABASE={sel_db};"
-                f"UID={sel_profile.get('USERNAME', '')};PWD={mssql_password};"
-                "Encrypt=yes;TrustServerCertificate=yes;"
-            )
-            mssql_conn3 = pyodbc.connect(conn_str_db)
-            mssql_cur3 = mssql_conn3.cursor()
-            mssql_cur3.execute(
-                "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA "
-                "WHERE SCHEMA_NAME NOT IN ('sys','INFORMATION_SCHEMA','guest') "
-                "AND SCHEMA_NAME NOT LIKE 'db[_]%' "
-                "ORDER BY SCHEMA_NAME")
-            mssql_schemas = [r[0] for r in mssql_cur3.fetchall()]
-            mssql_cur3.close()
-            mssql_conn3.close()
-
-            if not mssql_schemas:
-                mssql_schemas = ["dbo"]
-
-            # Show schema dropdown below the database dropdown
-            sel_mssql_schema = col_schema.selectbox(
-                "MSSQL Schema", mssql_schemas, key="cfg_mssql_schema")
+            mssql_schemas = mssql_all_schemas.get(sel_db, ["dbo"])
+            sel_mssql_schema = mssql_sch_col.selectbox(
+                "Schema", mssql_schemas, key="cfg_mssql_schema")
 
             sel_schema = sel_db
             st.session_state["_mssql_source_schema"] = sel_mssql_schema
-        except Exception as e:
-            col_schema.error(f"Cannot connect: {e}")
-            sel_schema = col_schema.text_input("MSSQL Database (manual)", key="cfg_mssql_schema_manual")
-            st.session_state["_mssql_source_schema"] = "dbo"
     elif sel_profile["SOURCE_TYPE"] == "oracle":
         try:
             import oracledb
@@ -1013,7 +1052,7 @@ def render(conn):
 
     # Add vertical spacer so buttons align with the selectbox
     col_gen.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-    discover_clicked = col_gen.button("⚙️ Generate Config", type="primary",
+    discover_clicked = col_gen.button("🔍 Discover Tables", type="primary",
                                       use_container_width=True)
 
     col_add.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
@@ -1131,7 +1170,7 @@ def render(conn):
     if not tables:
         from utils.shared import empty_state
         empty_state("📋", "No Tables Configured",
-                    "Select a MySQL schema above and click <b>⚙️ Generate Config</b> "
+                    "Select a schema above and click <b>🔍 Discover Tables</b> "
                     "to auto-discover tables, or use <b>➕ Add Table</b> to add one manually.")
         cur.close()
         return

@@ -101,7 +101,9 @@ def _render_run_logs(cur, conn):
     total_runs = len(hist)
     n_success = len(hist[hist["STATUS"] == "success"])
     n_failed = len(hist[hist["STATUS"] == "failed"])
-    success_pct = round(n_success / total_runs * 100, 1) if total_runs else 0
+    n_skipped = len(hist[hist["STATUS"] == "skipped"])
+    n_attempted = total_runs - n_skipped  # only count runs that actually executed
+    success_pct = round(n_success / n_attempted * 100, 1) if n_attempted else 100
     avg_dur = round(hist["DURATION_SEC"].dropna().mean(), 1) if not hist["DURATION_SEC"].isna().all() else 0
 
     st.markdown(f"""<div class="cfg-summary">
@@ -114,10 +116,40 @@ def _render_run_logs(cur, conn):
         <div class="cfg-mini-card" style="border-left:3px solid {ST_FAILED}">
             <div class="mc-val" style="color:{ST_FAILED}">{n_failed}</div>
             <div class="mc-lbl">Failed</div></div>
+        <div class="cfg-mini-card" style="border-left:3px solid {ST_SKIPPED}">
+            <div class="mc-val" style="color:{ST_SKIPPED}">{n_skipped}</div>
+            <div class="mc-lbl">Skipped</div></div>
         <div class="cfg-mini-card" style="border-left:3px solid {TXT_LABEL}">
             <div class="mc-val" style="color:{TXT_PRIMARY}">{avg_dur}s</div>
             <div class="mc-lbl">Avg Duration</div></div>
     </div>""", unsafe_allow_html=True)
+
+    # Skipped runs breakdown by source type
+    if n_skipped > 0:
+        ENGINE_TO_SOURCE = {
+            "mysqlsh": "MySQL", "connectorx": "MySQL",
+            "bcp": "MSSQL",
+            "oracledb": "Oracle",
+            "tpt": "Teradata", "teradatasql": "Teradata",
+        }
+        skipped_df = hist[hist["STATUS"] == "skipped"].copy()
+        skipped_df["_source"] = skipped_df["ENGINE"].map(
+            lambda e: ENGINE_TO_SOURCE.get((e or "").lower(), e or "Unknown"))
+        skip_by_src = skipped_df.groupby("_source").agg(
+            COUNT=("STATUS", "size"),
+            TABLES=("SOURCE_TABLE", "nunique"),
+        ).sort_values("COUNT", ascending=False).reset_index()
+        skip_by_src.columns = ["Source", "Skipped Runs", "Tables"]
+
+        with st.expander(f"Skipped Runs Breakdown ({n_skipped} total)", expanded=False):
+            st.dataframe(skip_by_src, use_container_width=True, hide_index=True)
+            top_skip = (skipped_df.groupby(["_source", "SOURCE_TABLE"])
+                        .size().reset_index(name="Skips")
+                        .sort_values("Skips", ascending=False).head(10))
+            top_skip.columns = ["Source", "Table", "Skips"]
+            if not top_skip.empty:
+                st.caption("Top skipped tables")
+                st.dataframe(top_skip, use_container_width=True, hide_index=True)
 
     # Filters
     st.markdown("<br>", unsafe_allow_html=True)
